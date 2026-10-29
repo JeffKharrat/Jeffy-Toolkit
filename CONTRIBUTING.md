@@ -8,7 +8,7 @@ and how to ship an update safely.
 ```bash
 git clone https://github.com/CrapyShit/Jeffy-Toolkit.git
 cd Jeffy-Toolkit
-pip install pytest ruff maya-stubs PySide6-Essentials
+pip install pytest ruff maya-stubs "PySide6-Essentials<6.12"
 ```
 
 Inside Maya, install once with `install/drag_and_drop_install.py`. After
