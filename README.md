@@ -100,7 +100,7 @@ tools/           check_maya_api.py (validates every cmds flag against maya-stubs
 ## Development
 
 ```bash
-pip install pytest ruff maya-stubs PySide6-Essentials
+pip install pytest ruff maya-stubs "PySide6-Essentials<6.12"
 ruff check .
 python tools/check_maya_api.py scripts install
 QT_QPA_PLATFORM=offscreen python -m pytest
