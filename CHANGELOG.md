@@ -8,6 +8,11 @@ documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Shape memory.** Control shapes edited by hand (CVs, colour, line width,
+  always on top) are saved when a setup is deleted or rebuilt and given back
+  at its next build. Untouched controls are not stored. Remembered shapes
+  scale with the *Control size* option. SCENE > Utilities has **Remember
+  Shapes** and **Forget Shapes** buttons.
 - **Edge Ribbon** layer tool: a ribbon on a mesh edge loop or chain (lips,
   brows, cheeks). Its controls follow the mesh's blendShape and can still be
   animated on top with no double transformation, using a hidden base ribbon

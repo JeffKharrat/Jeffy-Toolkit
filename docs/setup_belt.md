@@ -193,7 +193,18 @@ The **Spaces** tool edits them later, on any control.
   them; confirming deletes them too.
 - **Rebuild with new options**: load a setup from the setup list, change
   options or guides, press **Rebuild**. Layers on top rebuild after it with
-  their own stored options. Control shapes you edited by hand are *not* kept.
+  their own stored options.
+- **Control shapes are remembered.** Edit a belt control's shape by hand (CVs,
+  Replace Shape, colour, line width, always on top) and Delete or Rebuild the
+  setup: the next build of a setup with the same type, name and side gives the
+  shape back (a Rebuild under a new name keeps it too). Only edited controls
+  are stored, so untouched ones still follow the joints and the size option.
+  A remembered shape scales with the setup's *Control size* when that option
+  changes. The memory is one scene node, `jeffyShapeMemory`, which belongs to
+  no setup. SCENE > Utilities > **Remember Shapes** stores the selected
+  controls now, **Forget Shapes** makes the next rebuild use the default shape
+  again. The Edge Ribbon master outline (its CVs follow the lips) is never
+  stored.
 - Every Build, Rebuild or Delete is one undo step.
 
 ### Game safe

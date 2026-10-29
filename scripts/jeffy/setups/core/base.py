@@ -23,7 +23,7 @@ attaches the setup to its parent and builds the mirrored side.
 from maya import cmds
 
 from jeffy.core import attributes, matrix, naming, plugins, transform
-from jeffy.setups.core import attach, controls, drive, scene, schema
+from jeffy.setups.core import attach, controls, drive, scene, schema, shape_memory
 from jeffy.setups.core import edges as edge_tools
 from jeffy.setups.core import guides as guides_module
 from jeffy.setups.core import tag as tag_module
@@ -363,6 +363,8 @@ class Setup(object):
         """Called when the build fails, before its new nodes are deleted (undo what :meth:`keep` protects)."""
 
     def _finish(self, before):
+        # first: replaced curve shapes are new nodes the setup must own
+        shape_memory.restore(self)
         outputs = self.outputs
         driven, rest = [], []
         scale = self.scale_stretch()
@@ -743,6 +745,10 @@ class Setup(object):
 
     def _delete_self(self):
         _notify("on_deleted", self)
+        try:  # the hand edited control shapes come back at the next build
+            shape_memory.capture(self)
+        except Exception as error:  # never stops a delete
+            cmds.warning("[Jeffy] %s: control shapes not remembered (%s)" % (self.describe(), error))
         self.before_delete()
         attach.clear(self)
         driven = tag_module.get_nodes(self.tag, "driven", keep_empty=True)
@@ -805,7 +811,13 @@ class Setup(object):
                 if not layer.is_mirror_secondary():
                     layer_specs.append(layer.spec())
         was_secondary = primary is not self
+        old_name, old_side, had_mirror = primary.name, primary.side, primary.mirror is not None
         primary.delete(layers=True, mirror=True)
+        if (spec["name"], spec["side"]) != (old_name, old_side):  # the remembered shapes follow the new name
+            shape_memory.rename(primary.TYPE, old_name, old_side, spec["name"], spec["side"])
+            if had_mirror:
+                shape_memory.rename(primary.TYPE, old_name, naming.mirror_side(old_side), spec["name"],
+                                    naming.mirror_side(spec["side"]))
         cls = type(primary)
         new = cls.create(spec["slots"], spec["options"], name=spec["name"], side=spec["side"], guides=spec["guides"])
         errors = []

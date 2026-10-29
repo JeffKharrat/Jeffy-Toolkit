@@ -41,6 +41,11 @@ class UtilitiesPanel(QtWidgets.QScrollArea):
             w.button("Save To Library", actions.save_shape_to_library, "Add the selected curve to your shapes"),
             w.button("Export Shapes", actions.export_shapes),
             w.button("Import Shapes", actions.import_shapes),
+            w.button("Remember Shapes", actions.remember_shapes,
+                     "Keep the selected belt controls' shapes through every rebuild (edited shapes are kept "
+                     "automatically)"),
+            w.button("Forget Shapes", actions.forget_shapes,
+                     "The next rebuild gives the selected belt controls their default shape again"),
         ], 2))
         self.line_width = w.spin(2.0, -1.0, 20.0, 1, 0.5, "-1 = Maya default")
         shapes.add(w.row(("Line width", self.line_width), w.button(
