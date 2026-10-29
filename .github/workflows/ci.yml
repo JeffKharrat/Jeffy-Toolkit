@@ -44,6 +44,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Qt system libraries
         run: sudo apt-get update && sudo apt-get install -y libegl1 libxkbcommon0 libfontconfig1 libdbus-1-3
-      - run: pip install pytest maya-stubs PySide6-Essentials
+      # PySide6 6.12.0 loses a reference to None on every void call on Python <= 3.11:
+      # the banner test makes thousands, then Python aborts at exit (code 134)
+      - run: pip install pytest maya-stubs "PySide6-Essentials<6.12"
       - run: python -m compileall -q scripts install tools
       - run: python -m pytest
