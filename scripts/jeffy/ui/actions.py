@@ -123,6 +123,48 @@ def save_shape_to_library(name=None):
     return path
 
 
+def _belt_controls():
+    """``[(setup, [controls])]`` of the selected belt controls."""
+    from jeffy.setups.core import scene
+
+    groups = []
+    for node in _selection():
+        setup = scene.find_setup(node)
+        if setup is None:
+            continue
+        long_node = (cmds.ls(node, long=True) or [node])[0]
+        controls = [c for c in setup.controls.values() if (cmds.ls(c, long=True) or [c])[0] == long_node]
+        if not controls:
+            continue
+        for existing, members in groups:
+            if existing == setup:
+                members.extend(controls)
+                break
+        else:
+            groups.append((setup, controls))
+    if not groups:
+        raise ToolError("Select controls made by the belt")
+    return groups
+
+
+@tool("Remember Shapes")
+def remember_shapes():
+    """Remember the selected belt controls' shapes now (they come back at every rebuild)."""
+    from jeffy.setups.core import shape_memory
+
+    count = sum(len(shape_memory.capture(setup, nodes, force=True)) for setup, nodes in _belt_controls())
+    decorators.message("Remembered %d control shape(s)" % count)
+
+
+@tool("Forget Shapes")
+def forget_shapes():
+    """Forget the selected belt controls' shapes: the next rebuild gives them the default shape."""
+    from jeffy.setups.core import shape_memory
+
+    count = sum(len(shape_memory.forget(setup, nodes)) for setup, nodes in _belt_controls())
+    decorators.message("Forgot %d control shape(s)" % count)
+
+
 @tool("Export Shapes")
 def export_shapes():
     from jeffy.controls import shapes
