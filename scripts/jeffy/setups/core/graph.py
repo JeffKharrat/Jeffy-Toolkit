@@ -33,6 +33,7 @@ ROLES = ("input", "system", "output", "joint")
 #: system node types shown in the graph (the matrix flow); everything else is traced through
 MAIN_TYPES = ("multMatrix", "blendMatrix", "aimMatrix", "decomposeMatrix", "composeMatrix", "pickMatrix",
               "inverseMatrix", "choice", "uvPin", "proximityPin", "wtAddMatrix", "holdMatrix", "parentMatrix",
+              "remapValue", "multDL", "addDL", "multDoubleLinear", "addDoubleLinear",
               "joint", "ikHandle", "transform", "nurbsSurface", "nurbsCurve", "curveFromSurfaceIso", "motionPath",
               "pointOnCurveInfo", "closestPointOnSurface")
 SKIPPED_TYPES = ("unitConversion", "controller", "network", "nodeGraphEditorInfo", "objectSet", "ikEffector")
@@ -88,6 +89,11 @@ def setup_nodes(setup):
             return
         result[node] = role
 
+    extra = getattr(setup, "graph_nodes", None)  # wires: what they read and what they drive
+    extra = extra() if extra else []
+    for node, role in extra:
+        if role == "input":
+            add(node, "input")
     for node in setup.controls.values():
         add(node, "input")
     for definition, _zero, _control in setup.anchors():
@@ -107,6 +113,9 @@ def setup_nodes(setup):
         add(node, "system")
     for node in setup.outputs.values():
         add(node, "output")
+    for node, role in extra:
+        if role == "output":
+            add(node, "output")
     for node in setup.driven:
         add(node, "joint")
     return result

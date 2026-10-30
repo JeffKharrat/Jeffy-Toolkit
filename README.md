@@ -52,7 +52,8 @@ jeffy.show()      # or the Jeff Inventory menu, or the JEFF shelf button
 |---|---|
 | **BUILD** | **Rig Base** (rig groups, Global / Root controls, visibility switches), **FK Chain**, **IK/FK Limb** (stretch, soft IK, pin, pole or no-flip knee, IK/FK auto-snap), **Spline IK/FK** (spine with COG and independent hips, neck with head spaces, tails with an automatic wave), **Aim** (eyes), **Hand / Fingers** (poses, masters, metacarpals, IK fingers), **Jaw / Hinge** (chin control) |
 | **LAYERS** | **Ribbon** (bendy limbs with their own deform joints), **Twist**, **Reverse Foot** (roll control + ground pivots), **Fleshy Lids**, **Spaces** (custom spaces on any top control) |
-| **SCENE** | **Setups** (every setup: edit, rebuild, delete, IK/FK snap, seamless space switch), **Utilities** (control shapes, skin weights export / import) |
+| **WIRES** | **Follow** (A drives B keeping the offset: no constraints), **Attribute Driver** (an attribute drives others through a range). Tiny tracked networks between things that already exist; each node explains itself in its Notes |
+| **SCENE** | **Setups** (every setup: edit, rebuild, delete, IK/FK snap, seamless space switch), **Utilities** (control shapes, skin weights export / import), **Rig Doctor** (a scan that reports rig problems, with Select buttons) |
 
 Each panel is generated from the tool's slots and options: select joints,
 press `[<]` (several selected joints fill the next slots), set the options,

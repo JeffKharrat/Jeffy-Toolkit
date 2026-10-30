@@ -48,11 +48,11 @@ def test_slot_normalize():
 def test_registry():
     tools = scene.load_tools()
     assert set(tools) >= {"rig_base", "fk_chain", "ikfk_limb", "spaces", "ribbon", "twist", "reverse_foot", "spline",
-                          "aim", "lids", "jaw", "hand"}
+                          "aim", "lids", "jaw", "hand", "wire_follow", "wire_attribute"}
     for setup_type, cls in tools.items():
         assert issubclass(cls, Setup) and cls.TYPE == setup_type
         assert cls.LABEL and cls.DESCRIPTION
-        assert cls.CATEGORY in ("base", "build", "layer")
+        assert cls.CATEGORY in ("base", "build", "layer", "wire")
         keys = [slot.key for slot in cls.SLOTS]
         assert len(keys) == len(set(keys)), "%s has duplicate slots" % setup_type
         options = cls.option_schema()
@@ -81,10 +81,12 @@ def test_belt_window_builds_offscreen():
     labels = [belt.tool_list.item(i).text().strip() for i in range(belt.tool_list.count())]
     assert labels[:4] == ["BUILD", "Rig Base", "FK Chain", "IK/FK Limb"]
     build = labels[:labels.index("LAYERS")]
-    layers = labels[labels.index("LAYERS"):labels.index("SCENE")]
+    layers = labels[labels.index("LAYERS"):labels.index("WIRES")]
+    wire_labels = labels[labels.index("WIRES"):labels.index("SCENE")]
+    assert set(wire_labels) >= {"Follow", "Attribute Driver"}
     assert set(build) >= {"Spline IK/FK", "Aim", "Hand / Fingers", "Jaw / Hinge"}
     assert set(layers) >= {"Ribbon", "Twist", "Reverse Foot", "Fleshy Lids", "Spaces"}
-    assert labels[-3:] == ["SCENE", "Setups", "Utilities"]
+    assert labels[-4:] == ["SCENE", "Setups", "Utilities", "Rig Doctor"]
     assert belt.windowTitle().startswith("Jeff Inventory")
     for setup_type, cls in scene.load_tools().items():
         tool_panel = belt.panels[setup_type]
@@ -100,3 +102,33 @@ def test_belt_window_builds_offscreen():
     assert values["knee"] == "no-flip" and values["stretch"] is False and values["pole_distance"] == 2.5
     belt.close()
     del app
+
+
+def test_attribute_slots():
+    one = Slot("source", "Source", kind=schema.ATTRIBUTE)
+    many = Slot("targets", "Targets", kind=schema.ATTRIBUTES)
+    assert one.plugs and one.named and not one.multi and not one.components
+    assert many.plugs and many.multi
+    assert one.normalize(["L_mouth_CTL.translateY"]) == "L_mouth_CTL.translateY"
+    assert many.normalize("face_BS.smile, face_BS.frown") == ["face_BS.smile", "face_BS.frown"]
+
+
+def test_parked_wire_entries_replace_older_ones():
+    from jeffy.setups.core import wires
+
+    spec = {"type": "wire_follow", "name": "swordFollow", "side": "C", "options": {}, "slots": {}}
+    entries = wires.add_entry([], spec, ["ikfk_limb|arm|L"])
+    entries = wires.add_entry(entries, dict(spec, options={"rotate": False}), ["ikfk_limb|arm|L"])
+    assert len(entries) == 1 and entries[0]["spec"]["options"] == {"rotate": False}
+    assert wires.entry_name(spec) == "wire_follow|swordFollow|C"
+
+
+def test_doctor_roll_and_names():
+    from jeffy.setups.core import doctor
+
+    world = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+    rolled = [(1, 0, 0), (0, 0, 1), (0, -1, 0)]          # 90 degrees around the bone (X)
+    bent = [(0, 1, 0), (-1, 0, 0), (0, 0, 1)]            # a plain 90 degree bend: no roll
+    assert round(doctor.roll_degrees(world, rolled, (1, 0, 0), (1, 0, 0))) == 90
+    assert round(doctor.roll_degrees(world, bent, (1, 0, 0), (0, 1, 0))) == 0
+    assert doctor.numbered_suffix("L_LegLeaf2Bend_CTL1") and not doctor.numbered_suffix("L_arm_CTL")

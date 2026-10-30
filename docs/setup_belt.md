@@ -438,6 +438,82 @@ The node list comes from the setup's tag.
 - Mirror: an open chain on one side (a brow) builds the other side too (the
   mesh must be symmetrical).
 
+### Wires (connect things that already exist)
+
+A **wire** is a tiny node network with one job: it connects controls, joints,
+attributes or blendShape weights that are already there, so you don't build
+small matrix setups by hand. Wires are tracked like setups: each has a tag,
+owns its nodes, shows in SCENE > Setups (under the setup it drives), mirrors
+L / R, gets its Node Editor tab, and **deleting it puts back what it drove**
+(the values and connections it replaced).
+
+- **They teach.** Every node a wire creates explains itself in its **Notes**
+  (Attribute Editor > Notes, at the bottom), for example "blendMatrix: mixes
+  the two drivers by follow". Click a wire's nodes to understand it.
+- **They refuse driven targets.** A target something else already drives is
+  refused, naming the driver. When that driver is a leftover (utility nodes
+  with no real input, like a `multiplyDivide` nothing feeds that pins a
+  blendShape weight to 0), the message says so and names the nodes to delete.
+- **Rebuild with their setups.** Rebuilding a setup that a wire uses (its
+  driver or what it drives) deletes the wire first, then builds it again after
+  the setup and its layers, like layers.
+- **Parked when a setup is deleted.** Deleting a setup a wire uses parks the
+  wire: its settings are remembered in the scene (`jeffyWireMemory`), then it
+  is deleted cleanly. Building that setup again (same name) brings the wire
+  back by itself. Rig Doctor lists parked wires. Deleting a wire yourself never
+  parks it.
+- No Rig Base needed: wires also connect plain nodes.
+- Filling the slots: select the driver, then the driven, press `[<]` (the
+  next slots fill too). For attributes: select the node, highlight the
+  attribute(s) in the Channel Box, `[<]` (`+` adds more). For blendShape
+  targets, select the blendShape node itself: its targets show in the Channel
+  Box by name.
+
+**14. Follow** (wire): A drives B, keeping their current offset. It replaces
+parent / point / orient constraints.
+- Slots: driver, driven, driver 2 (optional), blend on (optional: the node
+  that gets the blend attribute; default the driven control).
+- Options: translate / rotate / scale (each on or off), blend attribute name
+  (`follow`) and default (0: driver 1).
+- Nodes: a `pickMatrix` keeps only the driver's chosen channels; a
+  `multMatrix` = offset at build x driver x parent inverse (no pop); with a
+  second driver a `blendMatrix` mixes the two by `follow`; another
+  `blendMatrix` takes the chosen channels and keeps the others at rest (a
+  `pickMatrix` there would reset them to zero).
+- **On a belt control it drives the OFF group**, not the ZRO: the ZRO's
+  `offsetParentMatrix` already carries its anchors and spaces, which keep
+  working underneath, and the CTL stays clean for the animator. A second
+  Follow on the same control is refused (its OFF is already driven).
+
+**15. Attribute Driver** (wire): one attribute drives others through a range,
+like a set driven key made of nodes (`L_mouth_CTL.translateY` 0..1 ->
+`face_BS.smile` 0..1).
+- Slots: source (one attribute), targets (one or more).
+- Options: input min / max, output min / max, clamp (on), curve (linear,
+  smooth, ease in, ease out).
+- Nodes: clamped, a `remapValue` maps the range along the curve and stays
+  inside it; unclamped (linear only), add / multiply / add nodes keep going
+  past the range.
+
+### Rig Doctor (SCENE)
+
+A scan of the scene that lists what looks wrong, with **Select** (a row, or a
+whole check). It changes nothing. Red: a problem; yellow: worth a look.
+
+| Check | Finds |
+|---|---|
+| Dead controls | belt controls with no real use, on them or below them (being only a space option for others doesn't count: a spine built without a pelvis leaves its Hips control like that) |
+| Joint rolls | a joint whose frame rolls 60 degrees or more around its bone compared with its parent (a ribbon middle control between them turns by half) |
+| Unskinned | joints setups drive that no skin uses; meshes under the rig's geometry group with no skin |
+| Leftover nodes | utility nodes connected to nothing downstream; intermediate shapes nothing uses |
+| Dead drivers | attributes pinned by utility chains with no real input (a leftover `multiplyDivide` on a blendShape weight) |
+| Name clashes | duplicate short names; names Maya numbered because they were taken (`_CTL1`) |
+| Rotate at rest | bind joints with rotate values at rest (the rest pose belongs in jointOrient) |
+| Broken links and extras | setups or wires whose nodes are gone, parked wires, constraint nodes, keys on bind joints |
+
+The checks work on whole lists of nodes, so a scan of a few thousand nodes
+takes well under a second.
+
 ## Code layout
 
 ```
@@ -445,12 +521,13 @@ scripts/jeffy/setups/
     core/      schema.py (slots, options), tag.py (setup tag), base.py (Setup class: build/delete/rebuild/mirror),
                scene.py (registry, queries), controls.py (ZRO/OFF controls), drive.py (joint-orient-aware
                matrix driving of bind joints), attach.py (auto-attach + spaces), guides.py,
-               edges.py (edge loop slots: order, mirror)
+               edges.py (edge loop slots: order, mirror), wire.py (Wire base: drive_plug, notes,
+               dependencies), wires.py (rebuild with setups, park / restore), notes.py, doctor.py (Rig Doctor)
     tools/     rig_base, fk_chain, ikfk_limb, spline, aim, hand, jaw, ribbon, twist, foot, lids, spaces,
-               edge_ribbon
+               edge_ribbon, wire_follow, wire_attribute
 scripts/jeffy/ui/setup_belt/
                window.py, panel.py (built from each tool's schema), setup_list.py, common.py,
-               node_tabs.py (a Node Editor tab per setup; layout from core/graph.py)
+               node_tabs.py (a Node Editor tab per setup; layout from core/graph.py), doctor_panel.py
 tests/test_setups.py   pure-Python tests (schema, registry, window offscreen), run in CI
 tests/in_maya/         headless builds in mayapy on a generated test skeleton: mayapy tests/in_maya/run.py
 ```

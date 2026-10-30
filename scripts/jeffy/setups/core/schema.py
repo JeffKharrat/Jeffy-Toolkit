@@ -16,7 +16,9 @@ JOINTS = "joints"
 NODE = "node"
 NODES = "nodes"
 EDGES = "edges"  # mesh edges (components), kept as names: ``face_GEO.e[120:131]``
-SLOT_KINDS = (JOINT, JOINTS, NODE, NODES, EDGES)
+ATTRIBUTE = "attribute"  # a node's attribute (plug), kept as a name: ``L_mouth_CTL.translateY``
+ATTRIBUTES = "attributes"
+SLOT_KINDS = (JOINT, JOINTS, NODE, NODES, EDGES, ATTRIBUTE, ATTRIBUTES)
 
 
 class SetupError(ToolError):
@@ -31,7 +33,8 @@ class Slot(object):
 
     :param key: argument name in the Python API (``start``, ``end``...)
     :param label: text shown in the panel (``Start``, ``Mid``...)
-    :param kind: ``joint``, ``joints`` (ordered list), ``node``, ``nodes`` or ``edges``
+    :param kind: ``joint``, ``joints`` (ordered list), ``node``, ``nodes``, ``edges``, ``attribute`` or
+        ``attributes``
     :param optional: the tool can build without it
     :param tip: tooltip in the panel
     """
@@ -47,12 +50,22 @@ class Slot(object):
 
     @property
     def multi(self):
-        return self.kind in (JOINTS, NODES, EDGES)
+        return self.kind in (JOINTS, NODES, EDGES, ATTRIBUTES)
 
     @property
     def components(self):
         """Mesh components (edges), not nodes."""
         return self.kind == EDGES
+
+    @property
+    def plugs(self):
+        """Attributes (``node.attr``), not nodes."""
+        return self.kind in (ATTRIBUTE, ATTRIBUTES)
+
+    @property
+    def named(self):
+        """Kept by name (edges, attributes): the tag stores their node for renames, the names as data."""
+        return self.components or self.plugs
 
     @property
     def joints_only(self):
