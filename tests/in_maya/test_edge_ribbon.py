@@ -82,6 +82,10 @@ def test_edge_ribbon_follows_blendshape_without_double_transform():
                      "L_lipsUpper_CTL", "C_lipsMaster_CTL"):
         assert expected in names, (expected, names)
     assert len(lips.bind_joints()) == 20
+    # the controls and joints sit on the loop, even though the mesh is moved away from the origin
+    assert_close(pos("C_lipsUpper_CTL"), (0.0, MOUTH[1] + 3.0, MOUTH[2]), "the upper lip control is on the lip")
+    assert_close(pos("L_lipsCorner_CTL"), (3.0, MOUTH[1], MOUTH[2]), "the corner control is on the corner")
+    assert_close(pos("C_lipsUpper_JNT"), (0.0, MOUTH[1] + 3.0, MOUTH[2]), "the bind joint is on the lip", 0.01)
     spheres = len(cmds.listRelatives("C_lipsUpper_CTL", shapes=True))
     assert spheres > 1, "sphere controls by default (several curves)"
 
@@ -119,17 +123,34 @@ def test_edge_ribbon_jaw_follow_and_master():
     _mesh, loop = mouth_mesh()
     lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop)
     upper, lower, corner = "C_lipsUpper_CTL", "C_lipsLower_CTL", "L_lipsCorner_CTL"
-    assert cmds.getAttr(upper + ".jawFollow") == 0.0
-    assert cmds.getAttr(lower + ".jawFollow") == 1.0
-    assert cmds.getAttr(corner + ".jawFollow") == 0.5
-    rests = dict((node, pos(node)) for node in (upper, lower, corner))
+    master = "C_lipsMaster_CTL"
+    assert [cmds.getAttr(master + "." + a) for a in ("upperJawFollow", "cornerJawFollow", "lowerJawFollow")] == \
+        [0.0, 0.5, 1.0]
+    joints = lips.bind_joints()
+    nodes = [upper, lower, corner] + joints
+    rests = dict((node, pos(node)) for node in nodes)
     cmds.setAttr("C_jawChin_CTL.translateY", -2)
-    assert_close(pos(upper), rests[upper], "jawFollow 0: the upper lip stays")
-    drop_lower = rests[lower][1] - pos(lower)[1]
-    drop_corner = rests[corner][1] - pos(corner)[1]
-    assert drop_lower > 0.3, ("the lower lip follows the jaw", drop_lower)
-    assert 0.0 < drop_corner < drop_lower, ("corners follow half way", drop_corner, drop_lower)
+    drop = dict((node, rests[node][1] - pos(node)[1]) for node in nodes)
+    assert_close(pos(upper), rests[upper], "upperJawFollow 0: the upper lip control stays")
+    assert drop[lower] > 0.3, ("the lower lip follows the jaw", drop[lower])
+    assert 0.0 < drop[corner] < drop[lower], ("corners follow half way", drop[corner], drop[lower])
+    # every bind joint: upper lip ones stay unless they are close to a corner, lower lip ones follow fully
+    uppers = [j for j in joints if "Upper" in j]
+    lowers = [j for j in joints if "Lower" in j]
+    corners = [j for j in joints if "Corner" in j]
+    far_uppers = [j for j in uppers if abs(rests[j][0]) < 1.5]  # the middle of the upper lip (radius 3)
+    assert far_uppers and all(abs(drop[j]) < 1e-3 for j in far_uppers), \
+        ("the middle of the upper lip never follows the jaw", [(j, round(drop[j], 3)) for j in far_uppers])
+    far_lowers = [j for j in lowers if abs(rests[j][0]) < 1.5]
+    assert all(abs(drop[j] - drop[lower]) < 0.05 for j in far_lowers), "the lower lip follows the jaw fully"
+    assert all(0.0 < drop[j] < max(drop[k] for k in far_lowers) for j in corners), "corners blend"
+    # live: the corner falloff region follows the attribute
+    cmds.setAttr(master + ".upperJawFollow", 0.3)
+    assert all(drop[j] < rests[j][1] - pos(j)[1] for j in far_uppers), "upperJawFollow is live"
+    cmds.setAttr(master + ".upperJawFollow", 0)
     cmds.setAttr("C_jawChin_CTL.translateY", 0)
+    for node in nodes:
+        assert_close(pos(node), rests[node], "back at rest: " + node)
 
     # the master moves every control
     cmds.setAttr("C_lipsMaster_CTL.translateX", 1)
@@ -154,24 +175,39 @@ def test_edge_ribbon_rebuild_keeps_weights_and_delete_restores():
     lips.connect_skin()
     top = top_vertex(mesh)
     weights_before = cmds.skinPercent(skin, top, query=True, value=True, ignoreBelow=1e-6)
-    lips = lips.rebuild(options={"joint_count": 20, "width": 0.4})
-    joint_influences = [j for j in cmds.skinCluster(skin, query=True, influence=True) if "lips" in j]
-    assert len(joint_influences) == 20, joint_influences
-    assert cmds.skinPercent(skin, top, query=True, value=True, ignoreBelow=1e-6) == weights_before
-    connected = cmds.listConnections(skin + ".bindPreMatrix", source=True, destination=False) or []
-    assert len(connected) == 20, "bindPreMatrix wired again after the rebuild"
+    joint_ids = sorted(cmds.ls(lips.bind_joints(), uuid=True))
     top_rest = cmds.pointPosition(top, world=True)
-    cmds.setAttr(mesh + "_BS.w[0]", 1)
-    assert_close(cmds.pointPosition(top, world=True), (top_rest[0], top_rest[1] + LIFT, top_rest[2]),
-                 "still no double transform", 0.02)
-    cmds.setAttr(mesh + "_BS.w[0]", 0)
 
+    def check(label):
+        """Same joints, same weights, live bindPreMatrix, and the blendShape still moves the lips once."""
+        assert sorted(cmds.ls(lips.bind_joints(), uuid=True)) == joint_ids, label + ": the skinned joints are reused"
+        assert cmds.skinPercent(skin, top, query=True, value=True, ignoreBelow=1e-6) == weights_before, label
+        connected = cmds.listConnections(skin + ".bindPreMatrix", source=True, destination=False) or []
+        assert len(connected) == 20, label + ": bindPreMatrix wired again"
+        cmds.setAttr(mesh + "_BS.w[0]", 1)
+        assert_close(cmds.pointPosition(top, world=True), (top_rest[0], top_rest[1] + LIFT, top_rest[2]),
+                     label + ": no double transform", 0.02)
+        cmds.setAttr(mesh + "_BS.w[0]", 0)
+
+    lips = lips.rebuild(options={"width": 0.4})
+    check("rebuild")
+
+    # delete: the skinned joints stay at rest in the skin, the mesh is back as it was (never re-weighted)
     lips.delete()
-    assert not [j for j in cmds.skinCluster(skin, query=True, influence=True) if "lips" in j]
+    assert len([j for j in cmds.skinCluster(skin, query=True, influence=True) if "lips" in j]) == 20
     after = [cmds.pointPosition(v, world=True) for v in cmds.ls(mesh + ".vtx[*]", flatten=True)]
     for a, b in zip(rest_points, after):
         assert_close(a, b, "the mesh is back as it was")
     assert cmds.objExists(mesh + "_BS"), "the user's blendShape stays"
+    assert not cmds.listConnections(skin + ".bindPreMatrix", source=True, destination=False)
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    assert_close(cmds.pointPosition(top, world=True), (top_rest[0], top_rest[1] + LIFT, top_rest[2]),
+                 "kept joints at rest: the blendShape alone moves the mesh", 0.02)
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
+
+    # a new build (same name) picks the kept joints up again
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop)
+    check("new build")
 
 
 def test_edge_ribbon_creates_blendshape_and_removes_it():
@@ -227,3 +263,24 @@ def test_edge_ribbon_open_chain_mirrors():
     assert_close(pos("R_brow01_CTL"), (-pos("L_brow01_CTL")[0],) + tuple(pos("L_brow01_CTL")[1:]),
                  "mirrored control")
     assert all(name.startswith("R_") for name in (scene.short(j) for j in other.bind_joints()))
+
+
+def test_edge_ribbon_lower_lip_chain_follows_the_jaw():
+    """An open chain along the lower lip only: every joint between its ends follows the jaw fully."""
+    rig()
+    mesh, loop = mouth_mesh()
+    lower = []
+    for edge in loop:
+        vertices = cmds.ls(cmds.polyListComponentConversion(edge, toVertex=True), flatten=True)
+        if all(cmds.pointPosition(v, world=True)[1] < MOUTH[1] + 0.01 for v in vertices):
+            lower.append(edge)
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=lower, name="lowLip", joint_count=9, control_count=5)
+    joints = lips.bind_joints()
+    rest = dict((j, pos(j)[1]) for j in joints)
+    cmds.setAttr("C_jawChin_CTL.translateY", -2)
+    drops = [rest[j] - pos(j)[1] for j in joints]
+    middle = drops[len(drops) // 2]
+    assert middle > 0.3, ("the lower lip follows the jaw", middle)
+    # past the corner falloff, the joints next to the ends follow like the middle (none is taken for upper lip)
+    assert all(d > 0.0 for d in drops), [round(d, 3) for d in drops]
+    assert min(drops[2:-2]) > middle * 0.8, [round(d, 3) for d in drops]

@@ -21,6 +21,11 @@ documented here. The format follows
   its own bind joints, rebuilds that keep the skin weights, and mirroring for
   one-sided chains.
 - Setup slots can hold mesh edges.
+- **Reset pose (whole rig)**: in SCENE > Setups (Animate) and the Jeff
+  Inventory menu. Every control goes back to zero (translate / rotate 0,
+  scale 1) and, with *Attributes too*, its other attributes to their defaults
+  (curl, fist, ikFk, stretch, spaces...). With controls selected, only those.
+  One undo step; locked and driven channels are left alone.
 - **The eye** at the top of the window (Proto Yeff logo) shows the state live,
   in soft colours on Maya's own grey style: light with a square of light
   (idle), green with the sigil (a command is running), red and split (the
@@ -34,6 +39,18 @@ documented here. The format follows
   turned off in the Setups list.
 
 ### Fixed
+- **Edge Ribbon upper lip followed the jaw near the corners.** Every bind joint
+  now gets its own jaw follow by where it sits (upper 0, corners 0.5, lower 1,
+  live on the master), blended only near the corners (*Corner falloff*); the
+  ribbon carries the controls' motion without the jaw. Half follows rotate
+  around the jaw's pivot.
+- **Edge Ribbon controls were placed twice the mesh's offset** when the mesh
+  transform was not at the origin.
+- **Edge Ribbon rebuild failed on skins with skin layers** ("Skin layer must be
+  specified"): skinned bind joints are kept and reused instead of re-weighted.
+- **Edge Ribbon on one lip (an open chain)**: the joints near its ends were
+  taken for the other lip and ignored the jaw. A chain is now one lip, upper
+  or lower by whether it bulges above or below its ends.
 - **Rebuilding or deleting a setup could delete other setups' IK handles.** The
   first setup with IK recorded Maya's shared IK solvers as its own nodes;
   rebuilding it deleted them, and every IK handle in the scene with them (a

@@ -56,6 +56,12 @@ class SetupsPanel(QtWidgets.QWidget):
                                                         "Open / refresh the selected setup's Node Editor tab")))
 
         animate = w.Section("Animate")
+        self.reset_attributes = w.check("Attributes too", True,
+                                        "Also put the controls' other attributes back to their defaults "
+                                        "(curl, fist, ikFk, stretch, spaces...)")
+        animate.add(w.row(w.button("Reset pose (whole rig)", self.reset_pose,
+                                   "Every control back to zero: translate / rotate 0, scale 1. With selected "
+                                   "controls, only those."), self.reset_attributes))
         self.key = w.check("Key", False, "Set keys after snapping / switching")
         animate.add(w.row(w.button("IK/FK snap + switch", self.snap,
                                    "Select any control of an IK/FK Limb: it snaps to the other mode and "
@@ -168,6 +174,18 @@ class SetupsPanel(QtWidgets.QWidget):
         done, count = common.run("Connect skin", setup.connect_skin, self.status)
         if done:
             common.ok(self.status, "%s: bindPreMatrix wired for %d influence(s)." % (setup.describe(), count))
+
+    def reset_pose(self):
+        from jeffy.setups.core import pose
+
+        selected = [node for node in (cmds.ls(selection=True, type="transform") or [])
+                    if node in set(cmds.ls(pose.controls_of()) or [])]
+        attributes = self.reset_attributes.isChecked()
+        done, count = common.run("Reset pose", lambda: pose.reset(attributes=attributes,
+                                                                  controls=selected or None), self.status)
+        if done:
+            what = "%d selected controls" % len(selected) if selected else "the whole rig"
+            common.ok(self.status, "Reset %s (%d channels)." % (what, count))
 
     def select_controls(self):
         setup = self.selected_setup()

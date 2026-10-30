@@ -47,6 +47,15 @@ MENU = [
 ]
 
 
+def _reset_pose(*_unused):
+    from jeffy.core import decorators
+    from jeffy.setups.core import pose
+
+    with decorators.undo_chunk("Reset pose"):
+        count = pose.reset()
+    print("[Jeffy] reset the rig's pose (%d channels)" % count)
+
+
 def install():
     """(Re)create the menu. Does nothing in batch mode."""
     if cmds.about(batch=True):
@@ -54,6 +63,8 @@ def install():
     uninstall()
     menu = cmds.menu(MENU_NAME, label=TOOLKIT_NAME, parent="MayaWindow", tearOff=True)
     cmds.menuItem(label="Open %s" % TOOLKIT_NAME, command=_act("show_setup_belt"), parent=menu)
+    cmds.menuItem(label="Reset Pose (whole rig)", command=_reset_pose, parent=menu,
+                  annotation="Every control back to zero, attributes to their defaults (one undo)")
     cmds.menuItem(divider=True, parent=menu)
     for title, entries in MENU:
         sub = cmds.menuItem(label=title, subMenu=True, tearOff=True, parent=menu)
