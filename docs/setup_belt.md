@@ -368,6 +368,15 @@ The node list comes from the setup's tag.
 - Game safe: the ribbon joints are parented under the bind joints (they
   export) and get no volume scale. Otherwise they live in their own group.
 - You skin to the ribbon joints instead of the limb joints.
+- Already skinned to the limb? Pick the Ribbon (or its limb) in the Setups
+  list and press **Weights to ribbon**
+  (`ribbon_weights.transfer(ribbon)`). Each chain bone's weights are split
+  evenly onto the ribbon joints **along that bone**: projected on the bone, so
+  a wide mesh splits by length, not by distance. The end of the last bone
+  fades into the end joint. Other influences and the painted blend at the
+  elbow are kept, nothing moves at rest, and the chain bones stay in the skin
+  at 0. Selected vertices limit it. It works posed once the ribbon joints are
+  in the skin; the first time, it asks for the rest pose (Reset Pose).
 
 **9. Twist** (built)
 - Base: an IK/FK Limb or FK Chain.
