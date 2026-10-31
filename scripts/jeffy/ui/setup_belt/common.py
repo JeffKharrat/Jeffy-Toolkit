@@ -51,6 +51,37 @@ def ok(widget, text):
     _status(widget, text, error=False)
 
 
+def channel_box_plugs():
+    """``node.attr`` of the attributes highlighted in the Channel Box (object, shape, inputs and outputs)."""
+    box = "mainChannelBox"
+    result = []
+    if not cmds.channelBox(box, exists=True):
+        return result
+    for objects_flag, attrs_flag in (("mainObjectList", "selectedMainAttributes"),
+                                     ("shapeObjectList", "selectedShapeAttributes"),
+                                     ("historyObjectList", "selectedHistoryAttributes"),
+                                     ("outputObjectList", "selectedOutputAttributes")):
+        objects = cmds.channelBox(box, query=True, **{objects_flag: True}) or []
+        attrs = cmds.channelBox(box, query=True, **{attrs_flag: True}) or []
+        for node in objects:
+            for attr in attrs:
+                if not cmds.attributeQuery(attr, node=node, exists=True):
+                    continue
+                name = attr
+                aliases = cmds.aliasAttr(node, query=True) or []  # [alias, real, alias, real...]
+                if attr not in aliases[::2]:  # ty -> translateY; a blendShape target name (an alias) stays
+                    try:
+                        long_name = cmds.attributeQuery(attr, node=node, longName=True)
+                        if long_name and long_name[0].isalpha() and "[" not in long_name:
+                            name = long_name
+                    except RuntimeError:
+                        pass
+                plug = "%s.%s" % (node, name)
+                if plug not in result:
+                    result.append(plug)
+    return result
+
+
 def selection(transforms_only=True):
     """Selected nodes in selection order (shapes -> transforms, components -> objects).
 

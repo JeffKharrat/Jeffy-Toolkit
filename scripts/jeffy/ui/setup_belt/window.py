@@ -5,15 +5,17 @@ from jeffy.core import logger, settings
 from jeffy.setups.core import scene
 from jeffy.ui import theme
 from jeffy.ui.qt import QtCore, QtWidgets, delete_workspace_control, dockable_base, maya_main_window
+from jeffy.ui.setup_belt.doctor_panel import DoctorPanel
 from jeffy.ui.setup_belt.panel import ToolPanel
 from jeffy.ui.setup_belt.setup_list import SetupsPanel
 from jeffy.ui.setup_belt.utilities import UtilitiesPanel
 
 LOG = logger.get_logger("setup_belt")
 OBJECT_NAME = "jeffySetupBeltWindow"
-CATEGORIES = (("base", "BUILD"), ("build", None), ("layer", "LAYERS"))
+CATEGORIES = (("base", "BUILD"), ("build", None), ("layer", "LAYERS"), ("wire", "WIRES"))
 SETUPS_KEY = "__setups__"
 UTILITIES_KEY = "__utilities__"
+DOCTOR_KEY = "__doctor__"
 
 _MIXIN = dockable_base()
 _BASES = (QtWidgets.QWidget,) if _MIXIN is object else (_MIXIN, QtWidgets.QWidget)
@@ -70,6 +72,12 @@ class SetupBeltWindow(*_BASES):
             LOG.exception("Could not build the Utilities panel: %s", error)
             utilities = QtWidgets.QLabel("Panel failed to load: %s" % error)
         self._add("Utilities", UTILITIES_KEY, utilities, "Control shapes and skin weights")
+        try:
+            doctor = DoctorPanel()
+        except Exception as error:  # a broken panel must not break the window
+            LOG.exception("Could not build the Rig Doctor panel: %s", error)
+            doctor = QtWidgets.QLabel("Panel failed to load: %s" % error)
+        self._add("Rig Doctor", DOCTOR_KEY, doctor, "Scan the scene for rig problems (report only)")
 
         self.tool_list.currentItemChanged.connect(self._on_tool)
         last = settings.get("belt_last_tool") or "ikfk_limb"

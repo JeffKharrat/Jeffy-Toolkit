@@ -130,6 +130,10 @@ class Setup(object):
             if slot.components:
                 result[slot.key] = cls._resolve_edges(slot, value)
                 continue
+            if slot.plugs:
+                plugs = cls._resolve_plugs(slot, value)
+                result[slot.key] = plugs if slot.multi else (plugs[0] if plugs else None)
+                continue
             names = value if slot.multi else ([value] if value else [])
             resolved = []
             for name in names:
@@ -156,6 +160,30 @@ class Setup(object):
             raise SetupError("%s: give mesh edges (%s)" % (slot.label, ", ".join(value)))
         edge_tools.mesh_of(value)  # one mesh only
         return edge_tools.compact(value)
+
+    @staticmethod
+    def _resolve_plugs(slot, value):
+        names = value if isinstance(value, list) else ([value] if value else [])
+        if not names:
+            if not slot.optional:
+                raise SetupError("Fill the '%s' slot (select the node, highlight the attribute in the Channel Box, "
+                                 "then <)" % slot.label)
+            return []
+        result = []
+        for name in names:
+            node, _, attr = name.partition(".")
+            if not attr:
+                raise SetupError("%s: give an attribute as node.attribute (%s)" % (slot.label, name))
+            matches = cmds.ls(node) or []
+            if not matches:
+                raise SetupError("%s: '%s' does not exist" % (slot.label, node))
+            if len(matches) > 1:
+                raise SetupError("%s: several nodes are named '%s', give them unique names" % (slot.label, node))
+            plug = "%s.%s" % (matches[0], attr)
+            if not cmds.objExists(plug):
+                raise SetupError("%s: %s has no attribute '%s'" % (slot.label, matches[0], attr))
+            result.append(plug)
+        return result
 
     @classmethod
     def first_joint(cls, slots):
@@ -245,7 +273,7 @@ class Setup(object):
         rig_setup = rig
         if cls.CATEGORY != "base" and rig_setup is None:
             rig_setup = scene.find_rig(cls.rig_lookup_node(slots))
-            if rig_setup is None:
+            if rig_setup is None and cls.CATEGORY != "wire":  # wires also connect plain nodes, outside any rig
                 raise SetupError(NO_RIG_MESSAGE)
 
         guide_values = cls.collect_guides(slots, options, name, side, guides)
@@ -269,6 +297,10 @@ class Setup(object):
             setup._build_mirror(rig_setup)
         # last: the Node Editor adds nodes created while a tab is active to that tab
         _notify("on_built", setup)
+        if _mirror_of is None and cls.CATEGORY != "wire":  # parked wires whose setups are all back
+            from jeffy.setups.core import wires
+
+            wires.restore_parked()
         return setup
 
     @classmethod
@@ -329,6 +361,8 @@ class Setup(object):
             nodes = value if slot.multi else ([value] if value else [])
             if slot.components:  # the mesh (rename proof), the edge names go in "slots"
                 nodes = [edge_tools.mesh_of(value)[0]] if value else []
+            elif slot.plugs:  # their nodes (rename proof), the "node.attr" names go in "slots"
+                nodes = [plug.split(".", 1)[0] for plug in nodes]
             tag_module.set_nodes(tag, "slot_" + slot.key, nodes)
             names[slot.key] = value
         tag_module.set_data(tag, "slots", names)
@@ -420,6 +454,10 @@ class Setup(object):
                     cmds.warning("[Jeffy] %s: %s, the other side was not built" % (self.LABEL, error))
                     return None
                 continue
+            attrs = None
+            if slot.plugs:  # mirror the node, keep the attribute
+                attrs = [name.split(".", 1)[1] for name in names]
+                names = [name.split(".", 1)[0] for name in names]
             mirrored = []
             for node in names:
                 short = naming.strip_namespace(node)
@@ -430,6 +468,8 @@ class Setup(object):
                                  % (self.LABEL, node, naming.mirror_name(naming.strip_namespace(node))))
                     return None
                 mirrored.append(other)
+            if attrs is not None:
+                mirrored = ["%s.%s" % (node, attr) for node, attr in zip(mirrored, attrs)]
             slots[slot.key] = mirrored if slot.multi else (mirrored[0] if mirrored else None)
         options = dict(self._options)
         options["mirror"] = False
@@ -566,8 +606,8 @@ class Setup(object):
 
     def slot_nodes(self, key):
         slot = self.slot_schema(key)
-        if slot is not None and slot.components:
-            return self._slot_edges(key)
+        if slot is not None and slot.named:
+            return self._slot_names(key)
         if self._slots is not None:
             value = self._slots.get(key)
             if value is None:
@@ -580,16 +620,23 @@ class Setup(object):
         names = stored if isinstance(stored, list) else ([stored] if stored else [])
         return [name for name in names if cmds.objExists(name)]
 
-    def _slot_edges(self, key):
-        """Edge names of an edges slot (follows a rename of their mesh)."""
+    def _slot_names(self, key):
+        """Names of an edges / attributes slot (``node.part``), following a rename of their nodes."""
         if self._slots is not None:
-            return list(self._slots.get(key) or [])
+            value = self._slots.get(key)
+            return list(value) if isinstance(value, list) else ([value] if value else [])
         stored = (tag_module.get_data(self.tag, "slots", {}) or {}).get(key) or []
-        mesh = tag_module.get_node(self.tag, "slot_" + key)
-        if mesh:
-            current = naming.short_name(mesh)
-            stored = ["%s.%s" % (current, name.split(".", 1)[1]) for name in stored if "." in name]
-        return stored
+        stored = stored if isinstance(stored, list) else [stored]
+        nodes = tag_module.get_nodes(self.tag, "slot_" + key, keep_empty=True)
+        result = []
+        for index, name in enumerate(stored):
+            if "." not in name:
+                continue
+            node = nodes[index] if index < len(nodes) else (nodes[0] if len(nodes) == 1 else None)
+            if node:  # renamed nodes keep working
+                name = "%s.%s" % (naming.short_name(node), name.split(".", 1)[1])
+            result.append(name)
+        return result
 
     def slot_node(self, key):
         nodes = self.slot_nodes(key)
@@ -697,7 +744,7 @@ class Setup(object):
         slots = {}
         for slot in self.SLOTS:
             nodes = self.slot_nodes(slot.key)
-            if not slot.components:
+            if not slot.named:
                 nodes = [naming.short_name(node) for node in nodes]
             slots[slot.key] = nodes if slot.multi else (nodes[0] if nodes else None)
         return {"type": self.TYPE, "name": self.name, "side": self.side, "slots": slots,
@@ -729,6 +776,11 @@ class Setup(object):
             return
         partner = self.mirror if mirror else None
         rig = None if self.CATEGORY == "base" else self.rig
+        if self.CATEGORY != "wire":  # wires using this setup are remembered, and come back with it
+            from jeffy.setups.core import wires
+
+            family = self.family_tags() + (partner.family_tags() if partner is not None else [])
+            wires.park_dependents(family)
         if self.CATEGORY == "base":
             for member in reversed(scene.all_setups(rig=self)):
                 if member.tag != self.tag and cmds.objExists(member.tag):
@@ -810,6 +862,12 @@ class Setup(object):
             for layer in owner.all_layers():
                 if not layer.is_mirror_secondary():
                     layer_specs.append(layer.spec())
+        wire_specs = []
+        if primary.CATEGORY != "wire":  # wires using the family are rebuilt after it (deleted first: they restore)
+            from jeffy.setups.core import wires
+
+            family = [tag for owner in owners for tag in owner.family_tags()]
+            wire_specs = wires.take_dependents(family)
         was_secondary = primary is not self
         old_name, old_side, had_mirror = primary.name, primary.side, primary.mirror is not None
         primary.delete(layers=True, mirror=True)
@@ -830,6 +888,8 @@ class Setup(object):
                 errors.append("%s: %s" % (layer_spec["name"], error))
         if errors:
             cmds.warning("[Jeffy] some layers could not be rebuilt: %s" % "; ".join(errors))
+        if wire_specs:
+            wires.rebuild_specs(wire_specs)
         if was_secondary and new.mirror is not None:
             return new.mirror
         return new

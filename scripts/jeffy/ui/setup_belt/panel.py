@@ -39,6 +39,7 @@ class SlotField(QtWidgets.QWidget):
         self.edit = QtWidgets.QLineEdit()
         placeholder = "optional" if slot.optional else (
             "select the edges, then <" if slot.components else
+            "select, highlight in the Channel Box, then <" if slot.plugs else
             "select in order, then <" if slot.multi else "select, then <")
         self.edit.setPlaceholderText(placeholder)
         self.edit.setToolTip(slot.tip)
@@ -76,6 +77,8 @@ class SlotField(QtWidgets.QWidget):
     def _selected(self):
         if self.slot.components:  # keep the edges (``mesh.e[3:9]``), not their mesh
             return edge_tools.compact(cmds.ls(selection=True, flatten=True) or [])
+        if self.slot.plugs:  # node.attr from the Channel Box
+            return common.channel_box_plugs()
         return common.selection()
 
     def load_selection(self):
@@ -93,7 +96,7 @@ class SlotField(QtWidgets.QWidget):
         if self.slot.components:
             self.set_value(edge_tools.compact(current + self._selected()))
             return
-        self.set_value(current + [node for node in common.selection() if node not in current])
+        self.set_value(current + [node for node in self._selected() if node not in current])
 
 
 class ToolPanel(QtWidgets.QScrollArea):
@@ -351,7 +354,7 @@ class ToolPanel(QtWidgets.QScrollArea):
 
     def _ensure_rig(self):
         """Offer to create the Rig Base when the scene has none."""
-        if self.tool.CATEGORY == "base" or scene.rigs():
+        if self.tool.CATEGORY in ("base", "wire") or scene.rigs():  # wires also work outside a rig
             return True
         values = self.slot_values()
         first = None

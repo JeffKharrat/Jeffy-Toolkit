@@ -85,6 +85,7 @@ class SetupsPanel(QtWidgets.QWidget):
             roots.append(item)
         builds = [s for s in setups if s.CATEGORY == "build"]
         layers = [s for s in setups if s.CATEGORY == "layer"]
+        wires = [s for s in setups if s.CATEGORY == "wire"]
         for setup in builds:
             item = self._item(setup)
             items[setup.tag] = item
@@ -114,6 +115,20 @@ class SetupsPanel(QtWidgets.QWidget):
                 for setup in pending:
                     roots.append(self._item(setup))
                 break
+        for setup in wires:  # under the setup they drive, else their rig, else at the top
+            item = self._item(setup)
+            parent = None
+            for target in setup.driven_targets():
+                owner = scene.find_setup(target.split(".", 1)[0])
+                if owner is not None and owner.tag in items:
+                    parent = items[owner.tag]
+                    break
+            if parent is None and setup.rig is not None:
+                parent = items.get(setup.rig.tag)
+            if parent is not None:
+                parent.addChild(item)
+            else:
+                roots.append(item)
         self.tree.addTopLevelItems(roots)
         self.tree.expandAll()
 

@@ -14,4 +14,6 @@ from jeffy.setups.tools import (  # noqa: F401
     spaces,
     spline,
     twist,
+    wire_attribute,
+    wire_follow,
 )

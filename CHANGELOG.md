@@ -12,6 +12,23 @@ documented here. The format follows
   Ribbon joints, split evenly along each bone, with the tip fading into the
   end joint. Other influences are untouched, the mesh doesn't move at rest,
   and it can work on selected vertices only. One undo.
+- **Wires**, a third kind of belt tool (WIRES, next to BUILD and LAYERS): tiny
+  tracked node networks that connect things that already exist. Each wire owns
+  its nodes, shows in the Setups list, mirrors, gets its Node Editor tab, and
+  deleting it puts back what it drove. Every node it creates explains itself in
+  its Notes. Wires rebuild with the setups they use; deleting such a setup
+  parks the wire, and building it again brings the wire back.
+  - **Follow**: A drives B keeping their offset (translate / rotate / scale,
+    optional second driver with a blend attribute). On a belt control it
+    drives the OFF group, so spaces keep working.
+  - **Attribute Driver**: one attribute drives others through a range
+    (clamp, curves). Refuses targets something else drives, and names
+    leftover drivers with no real input.
+- **Rig Doctor** (SCENE): a scan that reports dead controls, joints rolling
+  around their bone, unskinned joints and meshes, leftover nodes, dead driver
+  chains, name clashes, rotate at rest, broken setups and parked wires, with
+  Select buttons. It changes nothing.
+- Setup slots can hold attributes (`node.attr`), loaded from the Channel Box.
 - **Shape memory.** Control shapes edited by hand (CVs, colour, line width,
   always on top) are saved when a setup is deleted or rebuilt and given back
   at its next build. Untouched controls are not stored. Remembered shapes
