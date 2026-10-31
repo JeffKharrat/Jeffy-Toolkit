@@ -8,19 +8,15 @@ documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **Edge Ribbon: Curve option (Cubic / Linear).** Linear makes the curve,
-  the ribbon and the master outline run straight from vertex to vertex, so
-  controls and bind joints sit exactly on the edge loop. Cubic stays the
-  default.
-- **Edge Ribbon: Follow and Ribbon facing options**, for cartoony mouths. Follow
-  *along lip* (new default) aims the controls along the loop instead of
-  turning them with the mesh's triangles; Ribbon facing *out of face* (new
-  default) keeps the upper and lower lips' ribbon from folding when the mouth
-  closes. Setups built before keep working; rebuilding them uses the new
-  defaults (pick *mesh* / *across lip* for the older behaviour).
-- **Edge Ribbon: Outline points** (16 by default): the master's outline gets its
-  own points along the loop instead of one per control, so it keeps the lips'
-  shape (also with Curve: Linear).
+- **Edge Ribbon follows the edge loop exactly**, for cartoony mouths. A pin on
+  every loop vertex drives live curves, and every control and bind joint is
+  glued to its spot on them, so they stay on the loop for any shape (an O, a
+  closed line). The controls' motion runs on rest-shape ribbons that can't
+  fold. New options: **Split at corners** (on: upper and lower lips sharing
+  one control per corner), **Follow** (along lip / position only / mesh),
+  **Ribbon facing**, **Outline points** (16). The setup is always built on the
+  neutral face, whatever shapes are dialed in. The short-lived Curve option is
+  gone (setups that stored it still rebuild).
 - **Weights to ribbon** (Setups list): moves a limb's skin weights onto its
   Ribbon joints, split evenly along each bone, with the tip fading into the
   end joint. Other influences are untouched, the mesh doesn't move at rest,

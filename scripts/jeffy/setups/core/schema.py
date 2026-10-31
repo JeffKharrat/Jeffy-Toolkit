@@ -169,12 +169,13 @@ GAME_SAFE_OPTION = Option("game_safe", "Game safe", False,
                               "Off: the bind joints also scale along the bone when they stretch.")
 
 
-def resolve_options(options_schema, values):
+def resolve_options(options_schema, values, retired=()):
     """Merge ``values`` over the defaults of ``options_schema`` (coerced).
 
-    Unknown keys raise :class:`SetupError` so typos in scripts are caught.
+    Unknown keys raise :class:`SetupError` so typos in scripts are caught;
+    ``retired`` keys (options a tool no longer has) are dropped quietly.
     """
-    values = dict(values or {})
+    values = dict((key, value) for key, value in (values or {}).items() if key not in retired)
     known = dict((option.key, option) for option in options_schema)
     unknown = sorted(key for key in values if key not in known)
     if unknown:

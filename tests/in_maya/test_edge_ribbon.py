@@ -300,13 +300,13 @@ def _distance_to_loop(point, loop_points):
     return best
 
 
-def test_edge_ribbon_linear_curve_sits_on_the_edges():
+def test_edge_ribbon_sits_on_the_edges():
     from jeffy.setups.core import edges as edge_tools
     before = rig()
     mesh, loop = mouth_mesh()
     _ids, loop_points, closed = edge_tools.ordered_loop(loop)
     assert closed
-    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, curve="linear", joint_count=24)
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, joint_count=24)
     assert_no_pop(before)
     joints = lips.bind_joints()
     nodes = joints + [c for c in lips.controls.values() if not c.endswith("Master_CTL")]
@@ -332,39 +332,52 @@ def test_edge_ribbon_linear_curve_sits_on_the_edges():
                  "no double transformation", 0.02)
     cmds.setAttr(mesh + "_BS.w[0]", 0)
 
-    # rebuilt cubic (the default), the joints round off between the vertices
+    # a setup stored with the retired Curve option still rebuilds, still exactly on the edges
     lips = lips.rebuild(options={"curve": "cubic"})
     off = max(_distance_to_loop(pos(joint), loop_points) for joint in lips.bind_joints())
-    assert off > 0.01, ("cubic rounds off the loop", off)
+    assert off < 1e-3, ("still on the edges after a rebuild", off)
 
 
 def cartoon_face(name="toon_GEO"):
-    """A flat face (normal +Z) with a square lip loop, and a blendShape that stretches the mouth wide and
-    almost closes it (the lips end up 0.2 of a row apart)."""
+    """A flat face (normal +Z) with a lip loop pointed at the corners, and a blendShape with two targets:
+    0 stretches the mouth wide and almost closes it (the lips 0.2 of a row apart), 1 makes it a round O."""
+    import math
     mesh = cmds.polyPlane(name=name, width=10, height=10, subdivisionsX=6, subdivisionsY=6, axis=(0, 0, 1),
                           constructionHistory=False)[0]
     cmds.xform(mesh, translation=MOUTH)
     step = 10.0 / 6
-
-    def grid(vertex):
+    grid = {}
+    for vertex in cmds.ls(mesh + ".vtx[*]", flatten=True):
         x, y, _z = cmds.pointPosition(vertex, world=True)
-        return int(round((x - MOUTH[0]) / step)), int(round((y - MOUTH[1]) / step))
-
-    ring = set(v for v in cmds.ls(mesh + ".vtx[*]", flatten=True)
-               if max(abs(c) for c in grid(v)) == 1)
+        grid[int(vertex.split("[")[1][:-1])] = (int(round((x - MOUTH[0]) / step)), int(round((y - MOUTH[1]) / step)))
+    ring = set(i for i, g in grid.items() if max(abs(c) for c in g) == 1)
+    names = set("%s.vtx[%d]" % (mesh, i) for i in ring)
     loop = [e for e in cmds.ls(mesh + ".e[*]", flatten=True)
-            if set(cmds.ls(cmds.polyListComponentConversion(e, toVertex=True), flatten=True)) <= ring]
-    target = cmds.duplicate(mesh, name=name + "Toon")[0]
-    for vertex in cmds.ls(target + ".vtx[*]", flatten=True):
-        gx, gy = grid(vertex)
-        if max(abs(gx), abs(gy)) <= 1:
-            dy = -0.9 * step * gy  # top row down, bottom row up: nearly closed
-            cmds.move(gx * step * 0.8, dy, 0, vertex, relative=True, worldSpace=True)  # and much wider
-    cmds.blendShape(target, mesh, name=name + "_BS")
-    cmds.delete(target)
+            if set(cmds.ls(cmds.polyListComponentConversion(e, toVertex=True), flatten=True)) <= names]
+    for i in ring:  # pointed corners, like real lips
+        gx, gy = grid[i]
+        if gy == 0:
+            cmds.move(gx * step * 0.6, 0, 0, "%s.vtx[%d]" % (mesh, i), relative=True, worldSpace=True)
+    targets = []
+    for label in ("Toon", "O"):
+        target = cmds.duplicate(mesh, name=name + label)[0]
+        for i, (gx, gy) in grid.items():
+            if max(abs(gx), abs(gy)) > 1:
+                continue
+            vertex = "%s.vtx[%d]" % (target, i)
+            if label == "Toon":
+                dy = -0.9 * step * gy  # top row down, bottom row up: nearly closed
+                cmds.move(gx * step * 0.8, dy, 0, vertex, relative=True, worldSpace=True)  # and much wider
+            elif (gx, gy) != (0, 0):
+                angle = math.atan2(gy, gx)
+                cmds.move(MOUTH[0] + math.cos(angle) * step * 1.6, MOUTH[1] + math.sin(angle) * step * 1.6,
+                          MOUTH[2], vertex, absolute=True, worldSpace=True)
+        targets.append(target)
+    cmds.blendShape(targets, mesh, name=name + "_BS")
+    cmds.delete(targets)
     cmds.skinCluster("C_head_JNT", "C_jaw_JNT", mesh, toSelectedBones=True, name=name + "_SKN")
     cmds.skinPercent(name + "_SKN", mesh + ".vtx[*]", transformValue=[("C_head_JNT", 1.0)])
-    return mesh, loop, sorted(ring)
+    return mesh, loop, ["%s.vtx[%d]" % (mesh, i) for i in sorted(ring)]
 
 
 def _axis(node, index):
@@ -436,3 +449,87 @@ def test_edge_ribbon_cartoony_stretch_follow_modes():
         for index in range(3):
             assert abs(abs(_dot(_axis(ctl, index), [1.0 if k == index else 0.0 for k in range(3)])) - 1) < 1e-3, \
                 (ctl, index, _axis(ctl, index))
+
+
+def _loop_now(mesh, loop):
+    """The loop's current points, in loop order."""
+    from jeffy.setups.core import edges as edge_tools
+    ids, _points, _closed = edge_tools.ordered_loop(loop)
+    return [cmds.pointPosition("%s.vtx[%d]" % (mesh, i), world=True) for i in ids]
+
+
+def _turn(node, before):
+    import math
+    now = cmds.xform(node, query=True, worldSpace=True, matrix=True)
+    worst = 0.0
+    for i in range(3):
+        a, b = before[i * 4:i * 4 + 3], now[i * 4:i * 4 + 3]
+        d = _dot(a, b) / (_dot(a, a) * _dot(b, b)) ** 0.5
+        worst = max(worst, math.degrees(math.acos(max(-1.0, min(1.0, d)))))
+    return worst
+
+
+def test_edge_ribbon_split_lips_follow_the_loop_exactly():
+    rig()
+    mesh, loop, ring = cartoon_face()
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, name="toon", control_count=8, joint_count=16)
+    names = [scene.short(c) for c in lips.controls.values()]
+    corners = [n for n in names if "Corner" in n]
+    assert sorted(corners) == ["L_toonCorner_CTL", "R_toonCorner_CTL"], names  # one control per corner
+    ctls = [c for c in lips.controls.values() if not scene.short(c).endswith("Master_CTL")]
+    joints = lips.bind_joints()
+    rest = dict((n, cmds.xform(n, query=True, worldSpace=True, matrix=True)) for n in joints)
+
+    # every control and bind joint stays exactly on the edge loop: wide + closed, and a round O
+    for weights in ((1, 0), (0, 1), (0.5, 0.5)):
+        for target, weight in enumerate(weights):
+            cmds.setAttr("%s_BS.w[%d]" % (mesh, target), weight)
+        now = _loop_now(mesh, loop)
+        off = max(_distance_to_loop(pos(node), now) for node in joints + ctls)
+        assert off < 1e-3, (weights, "on the edge loop", off)
+    cmds.setAttr(mesh + "_BS.w[1]", 0)
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    turned = max(_turn(j, rest[j]) for j in joints)
+    assert turned < 100, ("closed mouth: no joint flips", turned)
+
+    # the corner control drives both lips
+    upper = [j for j in joints if "Upper" in j]
+    lower = [j for j in joints if "Lower" in j]
+    corner_side = [j for j in upper + lower if j.startswith("L_")]
+    before = dict((j, pos(j)) for j in corner_side)
+    cmds.setAttr("L_toonCorner_CTL.translateY", 0.5)
+    moved = dict((j, pos(j)[1] - before[j][1]) for j in corner_side)
+    assert any(moved[j] > 0.05 for j in corner_side if j in upper), moved
+    assert any(moved[j] > 0.05 for j in corner_side if j in lower), moved
+    cmds.setAttr("L_toonCorner_CTL.translateY", 0)
+
+    # game safe: the same skin result with plain bindPreMatrix
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
+    skin = mesh + "_SKN"
+    for joint in joints:
+        cmds.skinCluster(skin, edit=True, addInfluence=joint, weight=0.0)
+    for vertex in ring:
+        point = cmds.pointPosition(vertex, world=True)
+        nearest = min(joints, key=lambda j: sum((a - b) ** 2 for a, b in zip(pos(j), point)))
+        cmds.skinPercent(skin, vertex, transformValue=[(nearest, 1.0)], zeroRemainingInfluences=True)
+    lips = lips.rebuild(options={"game_safe": True})
+    cmds.setAttr(skin + ".envelope", 0)
+    cmds.setAttr(mesh + "_BS.w[1]", 1)
+    shaped = [cmds.pointPosition(v, world=True) for v in ring]
+    cmds.setAttr(skin + ".envelope", 1)
+    for vertex, expected in zip(ring, shaped):
+        assert_close(cmds.pointPosition(vertex, world=True), expected, "game safe: no double transformation", 1e-3)
+
+
+def test_edge_ribbon_built_while_a_shape_is_on():
+    rig()
+    mesh, loop, _ring = cartoon_face()
+    cmds.setAttr(mesh + "_BS.w[1]", 1)  # the O is dialed in while building
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, name="toon")
+    nodes = lips.bind_joints() + [c for c in lips.controls.values() if not c.endswith("Master_CTL")]
+    assert max(_distance_to_loop(pos(n), _loop_now(mesh, loop)) for n in nodes) < 1e-3, "on the O"
+    cmds.setAttr(mesh + "_BS.w[1]", 0)
+    assert max(_distance_to_loop(pos(n), _loop_now(mesh, loop)) for n in nodes) < 1e-3, "back on the neutral"
+    for ctl in lips.controls.values():
+        for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
+            assert abs(cmds.getAttr(ctl + "." + attr)) < 1e-6, (ctl, attr)

@@ -3,28 +3,34 @@
 Select an edge loop (all around the lips) or an edge chain (a brow) and the
 setup it follows (the Jaw / Hinge for lips, the head's setup otherwise):
 
-* controls along the loop **follow the blendShape result**, and the animator
-  can still move them on top,
-* their own **bind joints** ride a ribbon driven by the controls,
+* **follow layer** (exact): a pin on every loop vertex reads the blendShape
+  result; live linear curves run through them (an upper and a lower lip from
+  corner to corner when *Split at corners*, sharing one control per corner).
+  Every control and bind joint is glued to its own spot on its curve, so it
+  stays on the edge loop for any shape,
+* **offset layer**: ribbons at the rest shape (never deformed by the
+  blendShape, so they can't fold) carry only the controls' own motion; each
+  bind joint carries its offset onto its follow spot,
 * with a Jaw setup, every control **and every bind joint** follows the jaw by
   where it sits: upper lip 0, corners 0.5, lower lip 1 (``upperJawFollow``,
   ``cornerJawFollow``, ``lowerJawFollow`` on the master, live), blended only
-  near the corners (*Corner falloff*). The ribbon itself carries the controls'
-  motion without the jaw, so the upper lip never drifts with it,
+  near the corners (*Corner falloff*),
 * a **master** control moves (rotates, scales) every control at once; its
   curve outline follows the lips' shape live.
 
+The setup is built on the neutral face: the blendShape's envelope is set to 0
+while building, then put back.
+
 No double transformation
 ------------------------
-The skin must not move the vertices the blendShape already moved. A second,
-hidden *base* ribbon only follows the blendShape (no controls, no jaw, no
-head). Each bind joint's ``skinCluster.bindPreMatrix`` is the inverse of its
-point on the base ribbon, so the skin only adds what the controls, the jaw
-and the head did. Skin the mesh yourself, then run
+The skin must not move the vertices the blendShape already moved. Each bind
+joint's ``skinCluster.bindPreMatrix`` is the inverse of its follow spot (the
+blendShape result alone), so the skin only adds what the controls, the master,
+the jaw and the head did. Skin the mesh yourself, then run
 :meth:`EdgeRibbon.connect_skin` (the *Connect skin* button of the Setups list).
 
 Game safe: engines don't read live bindPreMatrix connections, so each bind
-joint carries the offset instead: ``rest * inverse(base) * driven``, under
+joint carries the offset instead: ``rest * inverse(follow) * driven``, under
 the head (or jaw parent) bind joint. The skin gets the same result with a
 normal bind; the joints sit at their rest spot plus the controls' offset.
 
@@ -51,8 +57,6 @@ _RIGHT_FRAME = mathlib.from_axes((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -
 OUTLINE_SCALE = 1.3
 #: shapes offered for the ribbon controls (names from the control shape library)
 CONTROL_SHAPES = ("sphere", "circle", "cube", "diamond", "octahedron", "square", "locator")
-#: how the curve (and the ribbon) runs along the loop
-CURVE_TYPES = ("cubic", "linear")
 #: how the controls turn with the blendShape
 FOLLOW_MODES = ("along lip", "position only", "mesh")
 #: where the ribbon's width points
@@ -68,6 +72,8 @@ class EdgeRibbon(Setup):
     DESCRIPTION = ("A ribbon on a mesh edge loop (lips, brows, cheeks): its controls follow the mesh's blendShape "
                    "and you can still move them, with no double transformation. Own bind joints, jaw follow on a "
                    "Jaw setup, and a master control whose outline follows the lips.")
+    #: options of earlier versions, ignored when a stored setup is rebuilt
+    RETIRED_OPTIONS = ("curve",)
     SLOTS = (
         Slot("base", "Setup", kind=NODE, tip="Any control of the setup it follows: the Jaw / Hinge for lips, the "
                                              "head's setup for brows or cheeks"),
@@ -83,10 +89,9 @@ class EdgeRibbon(Setup):
         Option("joint_count", "Bind joints", 20, minimum=2, maximum=200),
         Option("control_shape", "Control shape", "sphere", choices=CONTROL_SHAPES,
                tip="Shape of the ribbon controls (the master keeps its outline)"),
-        Option("curve", "Curve", "cubic", choices=CURVE_TYPES,
-               tip="Cubic: a smooth curve through the loop (it rounds off between the vertices).\n"
-                   "Linear: straight lines from vertex to vertex, exactly on the edge loop (controls and bind "
-                   "joints sit on the edges)."),
+        Option("split", "Split at corners", True,
+               tip="Closed loops: an upper and a lower lip, each from corner to corner, sharing one control "
+                   "per corner. The lips can close onto each other without folding. Off: one loop all around."),
         Option("follow", "Follow", "along lip", choices=FOLLOW_MODES,
                tip="How the controls turn when the blendShape moves the lips:\n"
                    "along lip: they aim along the loop and keep facing out of the face (no twist on strong "
@@ -94,9 +99,9 @@ class EdgeRibbon(Setup):
                    "position only: they keep their rest orientation,\n"
                    "mesh: they turn with the triangles under them (can twist on cartoony stretches)."),
         Option("ribbon_facing", "Ribbon facing", "out of face", choices=RIBBON_FACINGS,
-               tip="out of face: the ribbon's width points out of the face (a fence around the mouth), so the "
-                   "upper and lower lips never fold into each other when the mouth closes.\n"
-                   "across lip: the width lies flat in the lips' plane (the older behaviour)."),
+               tip="Which way the controls' ribbon is wide, so which way rotating a control rolls the lip.\n"
+                   "out of face: the width points out of the face.\n"
+                   "across lip: the width lies flat in the lips' plane."),
         Option("width", "Ribbon width", 0.0, minimum=0.0, maximum=1000.0, step=0.1,
                tip="0 = automatic (4% of the loop length)"),
         Option("master", "Master control", True,
@@ -163,31 +168,54 @@ class EdgeRibbon(Setup):
     # Build
     # ------------------------------------------------------------------
     def build_setup(self):
+        """Built on the neutral face: the blendShape is switched off meanwhile (then put back as it was)."""
+        shape = edge_tools.mesh_of(self.slot_nodes("edges"))[1]
+        blend = self._blendshape(shape)
+        with _neutral(blend):
+            self._build(blend)
+
+    def _build(self, blend):
+        """Follow layer + offset layer.
+
+        * **Follow**: one pin per loop vertex reads the blendShape output; live linear curves run through
+          them (an upper and a lower lip when split). Every control and bind joint sits at a fixed spot of
+          its curve (stuck to the flesh), so they stay exactly on the edge loop for any shape.
+        * **Offset**: small ribbons at the rest shape carry only the controls' own motion. Each bind joint
+          reads its ribbon offset and carries it onto its follow frame, then the master, head and jaw.
+        """
         options = self.options
         base = self.base
         self._reused = []
         edges = self.slot_nodes("edges")
         mesh, shape = edge_tools.mesh_of(edges)
-        _ids, points, closed = edge_tools.ordered_loop(edges)
-        blend = self._blendshape(shape)
+        ids, _points, closed = edge_tools.ordered_loop(edges)
         index = _geometry_index(blend, shape)
         game_safe = options["game_safe"]
+        mode = options.get("follow") or FOLLOW_MODES[0]
+        mesh_world = matrix.get_world_matrix(mesh)
+        # the neutral face (the blendShape's input), whatever shapes are dialed in while building
+        mesh_fn = _NeutralMesh("%s.input[%d].inputGeometry" % (blend, index), mesh_world)
+        points = mesh_fn.points(ids)
 
         world = self.group("World")
         cmds.setAttr(world + ".inheritsTransform", 0)
         hidden = self.group("NoTouch", parent=world, visible=False)
 
-        linear = options.get("curve") == "linear"
-        info_curve = _curve_through(points, closed, naming.compose(self.name + "Loop", self.side, "crv"),
-                                    max(len(points) - (0 if closed else 1), 4), linear=linear)
+        info_curve = _curve_through(points, closed, naming.compose(self.name + "Loop", self.side, "crv"), 0,
+                                    linear=True)
         info = _CurveInfo(info_curve, closed)
-        mesh_fn = om.MFnMesh(_dag_path(shape))
         length = info.length
         size = length * 0.025 * options["size"]
         eps = length * 0.01
-        anchor = info.length_at_point(min(points, key=lambda p: p[0])) if closed else None
-        control_stops = info.distribute(options["control_count"], anchor)
-        joint_stops = info.distribute(options["joint_count"], anchor)
+        anchor_index = min(range(len(points)), key=lambda i: (points[i][0], i)) if closed else None
+        anchor = info.length_at_point(points[anchor_index]) if closed else None
+        split = bool(closed and options.get("split", True))
+
+        def stops_for(count):
+            return _split_stops(count, anchor, length) if split else info.distribute(count, anchor)
+
+        control_stops = stops_for(options["control_count"])
+        joint_stops = stops_for(options["joint_count"])
         control_points = [info.point_at_length(s) for s in control_stops]
         corners = _corner_indices(control_stops, anchor, closed)
 
@@ -195,7 +223,6 @@ class EdgeRibbon(Setup):
         head, jaw = self._follow_outputs(base, mathlib.centroid(points))
         head_world = head + ".worldMatrix[0]"
         head_rest = controls.rest_matrix(head)
-        mesh_world = matrix.get_world_matrix(mesh)
         jaw_space = self._jaw_space(head_rest, jaw) if jaw else None
         if jaw:  # blends happen in a frame at the jaw's pivot: half a jaw follow is half the jaw's rotation
             pivot = mathlib.orthonormalize(controls.rest_matrix(jaw))
@@ -205,12 +232,83 @@ class EdgeRibbon(Setup):
                 controls.rest_matrix(jaw))), jaw + ".worldMatrix[0]"])
             from_pivot = mathlib.mult(head_rest, mathlib.inverse(pivot))
 
-        # blendShape follow pins (the blendShape output, before the skin)
+        # follow layer: a pin on every loop vertex (the blendShape output, before the skin) and live curves
         pin = cmds.createNode("proximityPin", name=naming.unique_name(self._n("Follow", "proximityPin")),
                               skipSelect=True)
         cmds.connectAttr("%s.outputGeometry[%d]" % (blend, index), pin + ".deformedGeometry")
         cmds.connectAttr(_original_geometry(blend, index, shape), pin + ".originalGeometry")
         tag_module.set_node(self.tag, "pin", pin)
+        pin_count = [0]
+
+        def pin_frame(rest, label, side):
+            """A pin at ``rest``: its blendShape pose in the rest world (rest at rest)."""
+            slot = pin_count[0]
+            pin_count[0] += 1
+            cmds.setAttr("%s.inputMatrix[%d]" % (pin, slot), mathlib.mult(rest, mathlib.inverse(mesh_world)),
+                         type="matrix")
+            plug = "%s.outputMatrix[%d]" % (pin, slot)
+            # the pin's output space (world or the mesh's own, by Maya version / settings): map its rest
+            # value back onto ``rest``, so nothing is placed twice
+            to_world = mathlib.mult(mathlib.inverse(common.plug_matrix(plug)), rest)
+            return _mult(naming.compose(label + "Pin", side, "MM"), [plug, to_world])
+
+        vertices = []
+        for k, point in enumerate(points):
+            frame = pin_frame(mathlib.set_translation(mathlib.identity(), point), self.name + "Vtx%02d" % k,
+                              self.side)
+            vertices.append(nodes.decompose_matrix(frame, name=self._n("Vtx%02d" % k, "DM")) + ".outputTranslate")
+        segments = _segments(points, closed, split, anchor_index)
+        names = ("Upper", "Lower") if split else ("",)
+        for seg, label in zip(segments, names):
+            seg.build(points, vertices, hidden, self._n("Follow" + label, "crv"))
+
+        def locate(s):
+            """``[(segment, length along it)]`` of the loop length ``s``: two entries on a split corner."""
+            if not split:
+                return [(segments[0], s)]
+            if s <= eps:
+                return [(segments[0], 0.0), (segments[1], 0.0)]
+            if abs(s - anchor) <= eps:
+                return [(segments[0], segments[0].info.length), (segments[1], segments[1].info.length)]
+            if s < anchor:
+                return [(segments[0], s)]
+            return [(segments[1], length - s)]
+
+        def position(label, side, s):
+            """Live world position (``pointOnCurveInfo``) of the loop length ``s``."""
+            seg, along = locate(s)[0]
+            return seg.point(label, side, seg.param(along))
+
+        def follow_frame(label, side, s, rest, point):
+            """The blendShape pose of the point at loop length ``s`` (rest world; ``rest`` at rest)."""
+            if mode == "mesh":
+                return pin_frame(rest, label, side)
+            moved = nodes.compose_matrix(translate=position(label, side, s),
+                                         name=naming.compose(label + "Follow", side, "UTL"))
+            if mode == "position only":
+                return _mult(naming.compose(label + "Follow", side, "MM"),
+                             [mathlib.set_translation(list(rest), (0.0, 0.0, 0.0)), moved])
+            tangents = [seg.tangent(label + "%d" % k, side, seg.param(along))
+                        for k, (seg, along) in enumerate(locate(s))]
+            if len(tangents) > 1:  # a corner: both lips' directions (they agree when the lips touch)
+                total = cmds.createNode("plusMinusAverage", name=naming.unique_name(
+                    naming.compose(label + "Corner", side, "PMA")), skipSelect=True)
+                for k, tangent in enumerate(tangents):
+                    cmds.connectAttr(tangent, "%s.input3D[%d]" % (total, k))
+                tangents = [total + ".output3D"]
+            _closest, normal, _face = mesh_fn.getClosestPointAndNormal(om.MPoint(*point), om.MSpace.kWorld)
+            aim = cmds.createNode("aimMatrix", name=naming.unique_name(naming.compose(label + "Along", side,
+                                                                                      "aim_matrix")),
+                                  skipSelect=True)
+            cmds.connectAttr(moved, aim + ".inputMatrix")
+            cmds.setAttr(aim + ".primaryInputAxis", 1, 0, 0)
+            cmds.setAttr(aim + ".primaryMode", 2)  # align X with the lip's direction
+            cmds.connectAttr(tangents[0], aim + ".primaryTargetVector")
+            cmds.setAttr(aim + ".secondaryInputAxis", 0, 0, 1)
+            cmds.setAttr(aim + ".secondaryMode", 2)  # Z out of the face (the mesh normal at rest)
+            cmds.setAttr(aim + ".secondaryTargetVector", normal.x, normal.y, normal.z)
+            offset = mathlib.mult(rest, mathlib.inverse(common.plug_matrix(aim + ".outputMatrix")))
+            return _mult(naming.compose(label + "Follow", side, "MM"), [offset, aim + ".outputMatrix"])
 
         # master control
         master = None
@@ -224,6 +322,12 @@ class EdgeRibbon(Setup):
             offset = cmds.listRelatives(master.node, parent=True)[0]
             local_plug = nodes.mult_matrix([master.node + ".matrix", offset + ".matrix"],
                                            name=self._n("MasterLocal", "MM"))
+        # the master (around its pivot), then out of the head's rest: what comes after a follow frame
+        if local_plug:
+            after_pose = [mathlib.inverse(master_rest), local_plug, mathlib.mult(master_rest,
+                                                                                mathlib.inverse(head_rest))]
+        else:
+            after_pose = [mathlib.inverse(head_rest)]
 
         # jaw follow: upper / corner / lower, blended around the corners (the same rule for controls and joints)
         corner_lengths = [control_stops[i] for i in sorted(corners)] if closed else [0.0, length]
@@ -256,24 +360,11 @@ class EdgeRibbon(Setup):
             return _mult(naming.compose(name + "JawFollow", side, "MM"), [from_pivot, blended])
 
         labels = _labels(control_points, corners, closed, eps, self.side)
-        # each control's blendShape pose (in the rest world, before the head / jaw motion)
-        poses = []
-        for i, (point, (label, ctl_side, _role)) in enumerate(zip(control_points, labels)):
-            rest = self._frame(point, ctl_side)
-            cmds.setAttr("%s.inputMatrix[%d]" % (pin, i), mathlib.mult(rest, mathlib.inverse(mesh_world)),
-                         type="matrix")
-            pin_plug = "%s.outputMatrix[%d]" % (pin, i)
-            # the pin's output space (world or the mesh's own, by Maya version / settings): map its rest
-            # value back onto the control's rest frame, so nothing is placed twice
-            to_world = mathlib.mult(mathlib.inverse(list(cmds.getAttr(pin_plug))), rest)
-            poses.append(_mult(naming.compose(self.name + label + "Pose", ctl_side, "MM"), [pin_plug, to_world]))
-        poses = self._orient_poses(poses, control_points, labels, closed, mesh_fn, options.get("follow"))
-
-        ctls, drivers, bases, follows = [], [], [], []
+        ctls, drivers = [], []
         for i, (point, (label, ctl_side, role)) in enumerate(zip(control_points, labels)):
             label = self.name + label
             rest = self._frame(point, ctl_side)
-            pose = poses[i]
+            pose = follow_frame(label, ctl_side, control_stops[i], rest, point)
             ctl = self.control("c%02d" % i, label, shape=options["control_shape"], size=size, axis="z",
                                world_matrix=rest,
                                lock=("s", "v"), secondary=True, side=ctl_side)
@@ -284,75 +375,56 @@ class EdgeRibbon(Setup):
                 if jaw_attrs is None:  # no master: the first control holds the jaw follow attributes
                     jaw_attrs = self._jaw_attrs(ctl.node)
                 follow = jaw_follow(label, ctl_side, control_stops[i], role)
-            follows.append(follow)
             # ZRO = blendShape pose (rest world) [* master, around its pivot] * head / jaw motion
-            inputs = [pose]
-            if local_plug:
-                inputs += [mathlib.inverse(master_rest), local_plug,
-                           mathlib.mult(master_rest, mathlib.inverse(head_rest))]
-            else:
-                inputs += [mathlib.inverse(head_rest)]
-            inputs += [follow, matrix.parent_inverse_plug(ctl.zero)]
-            zero_mm = _mult(naming.compose(label + "Follow", ctl_side, "MM"), inputs)
+            zero_mm = _mult(naming.compose(label + "Follow", ctl_side, "MM"),
+                            [pose] + after_pose + [follow, matrix.parent_inverse_plug(ctl.zero)])
             transform.reset(ctl.zero)
             cmds.connectAttr(zero_mm, ctl.zero + ".offsetParentMatrix", force=True)
-
-            if jaw_space:  # the ribbon carries the control's motion without the jaw (each joint adds its own)
-                driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=hidden)
-                no_jaw = nodes.inverse_matrix(follow, name=naming.compose(label + "NoJaw", ctl_side, "UTL"))
-                cmds.connectAttr(_mult(naming.compose(label + "Drv", ctl_side, "MM"),
-                                       [ctl.node + ".worldMatrix[0]", no_jaw, head_world]),
-                                 driver + ".offsetParentMatrix")
-            else:
-                driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=ctl.node)
-            base_joint = joint_tools.create_joint(naming.compose(label + "Base", ctl_side, "joint"), parent=hidden)
-            cmds.connectAttr(pose, base_joint + ".offsetParentMatrix")
-            for joint in (driver, base_joint):
-                cmds.setAttr(joint + ".visibility", 0)
+            # its driver on the rest ribbons: the control's own motion only, at its rest spot
+            driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=hidden)
+            cmds.connectAttr(_mult(naming.compose(label + "Drv", ctl_side, "MM"), [
+                ctl.node + ".worldMatrix[0]", ctl.zero + ".worldInverseMatrix[0]", rest]),
+                driver + ".offsetParentMatrix")
+            cmds.setAttr(driver + ".visibility", 0)
             ctls.append(ctl)
             drivers.append(driver)
-            bases.append(base_joint)
 
         if master is not None:  # the outline's own points along the loop (as many as Outline points)
             outline_stops = info.distribute(options["outline_points"], anchor)
             outline_points = [info.point_at_length(s) for s in outline_stops]
             outline_labels = _labels(outline_points, _corner_indices(outline_stops, anchor, closed), closed, eps,
                                      self.side)
-            outline_plugs, outline_follows, outline_worlds = [], [], []
-            for k, (point, (label, point_side, role)) in enumerate(zip(outline_points, outline_labels)):
-                rest = self._frame(point, point_side)
-                index = len(ctls) + k
-                cmds.setAttr("%s.inputMatrix[%d]" % (pin, index), mathlib.mult(rest, mathlib.inverse(mesh_world)),
-                             type="matrix")
-                plug = "%s.outputMatrix[%d]" % (pin, index)
-                outline_plugs.append(plug)
-                outline_worlds.append(mathlib.mult(mathlib.inverse(list(cmds.getAttr(plug))), rest))
-                outline_follows.append(jaw_follow(self.name + "Outline" + label, point_side, outline_stops[k], role)
-                                       if jaw_space else head_world)
-            self._outline(master, outline_plugs, outline_follows, outline_worlds, head, head_rest, master_rest,
-                          closed, linear)
+            plugs, follows = [], []
+            for k, (label, point_side, role) in enumerate(outline_labels):
+                label = self.name + "Outline" + label
+                plugs.append(nodes.compose_matrix(translate=position(label, point_side, outline_stops[k]),
+                                                  name=naming.compose(label, point_side, "UTL")))
+                follows.append(jaw_follow(label, point_side, outline_stops[k], role) if jaw_space else head_world)
+            self._outline(master, plugs, follows, [mathlib.identity()] * len(plugs), head, head_rest, master_rest,
+                          closed, True)
 
-        # the ribbons: driven (controls) and base (blendShape only)
+        # offset layer: a ribbon per lip at the rest shape, driven by the controls' own motion
         width = options["width"] or length * 0.04
-        spans = max(options["control_count"] * 3, options["joint_count"])
-        ribbon = _build_ribbon(info, mesh_fn, width, spans, naming.compose(self.name + "Ribbon", self.side, "surface"),
-                               points if linear else None, options.get("ribbon_facing") != "across lip")
-        ribbon_base = cmds.duplicate(ribbon, name=naming.unique_name(naming.compose(self.name + "RibbonBase",
-                                                                                    self.side, "surface")))[0]
-        for surface in (ribbon, ribbon_base):
-            cmds.parent(surface, hidden)
-        ribbon = cmds.ls(ribbon)[0]
-        ribbon_base = cmds.ls(ribbon_base)[0]
-        _skin_ribbon(ribbon, drivers, control_stops, info, self._n("Ribbon", "skinCluster"))
-        _skin_ribbon(ribbon_base, bases, control_stops, info, self._n("RibbonBase", "skinCluster"))
-        pins = {}
-        for key, surface in (("drv", ribbon), ("base", ribbon_base)):
-            uv_pin = cmds.createNode("uvPin", name=naming.unique_name(self._n(key.title() + "Ribbon", "uvPin")),
-                                     skipSelect=True)
+        out_of_face = options.get("ribbon_facing") != "across lip"
+        for seg, label in zip(segments, names):
+            members = []
+            for i, s in enumerate(control_stops):
+                for found, along in locate(s):
+                    if found is seg:
+                        members.append((along, drivers[i]))
+            members.sort(key=lambda item: item[0])
+            surface = _build_ribbon(seg.info, mesh_fn, width, 0, self._n("Ribbon" + label, "surface"),
+                                    [points[i] for i in seg.ids[:len(seg.ids) - (1 if seg.closed else 0)]],
+                                    out_of_face)
+            surface = cmds.parent(surface, hidden)[0]
+            _skin_ribbon(surface, [d for _a, d in members], [a for a, _d in members], seg.info,
+                         self._n("Ribbon" + label, "skinCluster"))
+            seg.ribbon = surface
+            seg.uv_pin = cmds.createNode("uvPin", name=naming.unique_name(self._n("Ribbon" + label, "uvPin")),
+                                         skipSelect=True)
             surface_shape = cmds.listRelatives(surface, shapes=True, noIntermediate=True, fullPath=True)[0]
-            cmds.connectAttr(surface_shape + ".worldSpace[0]", uv_pin + ".deformedGeometry")
-            cmds.setAttr(uv_pin + ".normalizedIsoParms", 1)
-            pins[key] = uv_pin
+            cmds.connectAttr(surface_shape + ".worldSpace[0]", seg.uv_pin + ".deformedGeometry")
+            cmds.setAttr(seg.uv_pin + ".normalizedIsoParms", 1)
 
         # bind joints
         joint_points = [info.point_at_length(s) for s in joint_stops]
@@ -366,26 +438,27 @@ class EdgeRibbon(Setup):
         binds, pre = [], []
         for k, (point, (label, joint_side, role)) in enumerate(zip(joint_points, joint_labels)):
             label = self.name + label
-            u, _v = _surface_uv(ribbon, point)
-            for uv_pin in pins.values():
-                cmds.setAttr("%s.coordinate[%d].coordinateU" % (uv_pin, k), u)
-                cmds.setAttr("%s.coordinate[%d].coordinateV" % (uv_pin, k), 0.5)
-            driven_plug = "%s.outputMatrix[%d]" % (pins["drv"], k)
-            base_plug = "%s.outputMatrix[%d]" % (pins["base"], k)
-            pin_rest = mathlib.orthonormalize(common.plug_matrix(driven_plug))
-            joint_rest = self._frame(mathlib.get_translation(pin_rest), joint_side)
+            joint_rest = self._frame(point, joint_side)
             joint = self._bind_joint(naming.compose(label, joint_side, "joint"), parent_joint or group, joint_rest,
                                      radius)
-            driven = common.offset_plug(naming.compose(label + "Driven", joint_side, "MM"), driven_plug, joint_rest,
-                                        common.plug_matrix(driven_plug))
-            based = common.offset_plug(naming.compose(label + "BindBase", joint_side, "MM"), base_plug, joint_rest,
-                                       common.plug_matrix(base_plug))
-            inverse = nodes.inverse_matrix(based, name=naming.compose(label + "BindPre", joint_side, "UTL"))
-            if jaw_space:  # the joint's own jaw follow, on top of the jaw-free ribbon
-                driven = _mult(naming.compose(label + "Jaw", joint_side, "MM"), [
-                    driven, head + ".worldInverseMatrix[0]", jaw_follow(label, joint_side, joint_stops[k], role)])
-            if game_safe:  # rest * inverse(base) * driven: only the offset, no live bindPreMatrix
-                driven = _mult(naming.compose(label + "Offset", joint_side, "MM"), [joint_rest, inverse, driven])
+            # the controls' offset at the joint's rest spot, in the joint's own frame
+            seg = locate(joint_stops[k])[0][0]
+            slot = seg.pins
+            seg.pins += 1
+            u, _v = _surface_uv(seg.ribbon, point)
+            cmds.setAttr("%s.coordinate[%d].coordinateU" % (seg.uv_pin, slot), u)
+            cmds.setAttr("%s.coordinate[%d].coordinateV" % (seg.uv_pin, slot), 0.5)
+            ribbon_plug = "%s.outputMatrix[%d]" % (seg.uv_pin, slot)
+            local = _mult(naming.compose(label + "Offset", joint_side, "MM"), [
+                mathlib.mult(joint_rest, mathlib.inverse(common.plug_matrix(ribbon_plug))), ribbon_plug,
+                mathlib.inverse(joint_rest)])
+            pose = follow_frame(label, joint_side, joint_stops[k], joint_rest, point)
+            inverse = nodes.inverse_matrix(pose, name=naming.compose(label + "BindPre", joint_side, "UTL"))
+            follow = jaw_follow(label, joint_side, joint_stops[k], role) if jaw_space else head_world
+            driven = _mult(naming.compose(label + "Driven", joint_side, "MM"),
+                           [local, pose] + after_pose + [follow])
+            if game_safe:  # rest * inverse(pose) * driven: only the offset, no live bindPreMatrix
+                driven = _mult(naming.compose(label + "GameSafe", joint_side, "MM"), [joint_rest, inverse, driven])
             self.add_output("b%02d" % k, driven, joint=joint, label=label)
             binds.append(joint)
             pre.append(inverse.split(".")[0])
@@ -494,51 +567,6 @@ class EdgeRibbon(Setup):
         if joints:
             return joints[0]
         raise SetupError("Game safe: found no bind joint to put the ribbon joints under")
-
-    def _orient_poses(self, poses, points, labels, closed, mesh_fn, mode):
-        """How the controls turn with the blendShape (the *Follow* option). Each pose keeps its rest value.
-
-        * ``along lip``: they aim along the loop (from the previous control to the next) and keep facing out
-          of the face: stretching and squashing never twist them,
-        * ``position only``: they keep their rest orientation,
-        * ``mesh``: they turn with the mesh's triangles under them (can twist on strong stretches).
-        """
-        if mode == "mesh":
-            return poses
-        count = len(poses)
-        positions = [nodes.decompose_matrix(pose, name=naming.compose(self.name + label + "Pose", side, "DM"))
-                     + ".outputTranslate" for pose, (label, side, _role) in zip(poses, labels)]
-        result = []
-        for i, (pose, point, (label, side, _role)) in enumerate(zip(poses, points, labels)):
-            label = self.name + label
-            rest = self._frame(point, side)
-            moved = nodes.pick_matrix(pose, rotate=False, scale=False, shear=False,
-                                      name=naming.compose(label + "PoseMove", side, "UTL"))
-            if mode == "position only":
-                result.append(_mult(naming.compose(label + "PoseFollow", side, "MM"),
-                                    [mathlib.set_translation(list(rest), (0.0, 0.0, 0.0)), moved]))
-                continue
-            before = (i - 1) % count if closed else max(i - 1, 0)
-            after = (i + 1) % count if closed else min(i + 1, count - 1)
-            direction = cmds.createNode("plusMinusAverage", name=naming.unique_name(
-                naming.compose(label + "Along", side, "PMA")), skipSelect=True)
-            cmds.setAttr(direction + ".operation", 2)  # next - previous: the lip's direction here
-            cmds.connectAttr(positions[after], direction + ".input3D[0]")
-            cmds.connectAttr(positions[before], direction + ".input3D[1]")
-            _closest, normal, _face = mesh_fn.getClosestPointAndNormal(om.MPoint(*point), om.MSpace.kWorld)
-            aim = cmds.createNode("aimMatrix", name=naming.unique_name(naming.compose(label + "Along", side,
-                                                                                      "aim_matrix")),
-                                  skipSelect=True)
-            cmds.connectAttr(moved, aim + ".inputMatrix")
-            cmds.setAttr(aim + ".primaryInputAxis", 1, 0, 0)
-            cmds.setAttr(aim + ".primaryMode", 2)  # align X with the lip's direction
-            cmds.connectAttr(direction + ".output3D", aim + ".primaryTargetVector")
-            cmds.setAttr(aim + ".secondaryInputAxis", 0, 0, 1)
-            cmds.setAttr(aim + ".secondaryMode", 2)  # Z out of the face (the mesh normal at rest)
-            cmds.setAttr(aim + ".secondaryTargetVector", normal.x, normal.y, normal.z)
-            offset = mathlib.mult(rest, mathlib.inverse(common.plug_matrix(aim + ".outputMatrix")))
-            result.append(_mult(naming.compose(label + "PoseFollow", side, "MM"), [offset, aim + ".outputMatrix"]))
-        return result
 
     def _outline(self, master, pins, follows, to_worlds, head, head_rest, master_rest, closed, linear=False):
         """The master's curve follows the loop's blendShape + jaw pose (not the controls: no cycle).
@@ -813,6 +841,126 @@ class _CurveInfo(object):
             return [anchor * k / half for k in range(half)] + [anchor + (total - anchor) * k / half
                                                                for k in range(half)]
         return [total * k / count for k in range(count)]
+
+
+class _neutral(object):  # noqa: N801 - a context manager
+    """Switch ``blend`` off (envelope 0) while building, then put its value / connection back."""
+
+    def __init__(self, blend):
+        self.plug = blend + ".envelope"
+        self.source = None
+        self.value = None
+
+    def __enter__(self):
+        found = cmds.listConnections(self.plug, source=True, destination=False, plugs=True) or []
+        self.source = found[0] if found else None
+        if self.source:
+            cmds.disconnectAttr(self.source, self.plug)
+        self.locked = cmds.getAttr(self.plug, lock=True)
+        cmds.setAttr(self.plug, lock=False)
+        self.value = cmds.getAttr(self.plug)
+        cmds.setAttr(self.plug, 0)
+        return self
+
+    def __exit__(self, *_error):
+        cmds.setAttr(self.plug, self.value)
+        if self.source:
+            cmds.connectAttr(self.source, self.plug, force=True)
+        cmds.setAttr(self.plug, lock=self.locked)
+        return False
+
+
+class _NeutralMesh(object):
+    """The mesh as it enters its blendShape (the neutral face), read in world space."""
+
+    def __init__(self, plug, world):
+        selection = om.MSelectionList()
+        selection.add(plug)
+        self.data = selection.getPlug(0).asMObject()
+        if self.data.isNull() or not self.data.hasFn(om.MFn.kMesh):
+            raise SetupError("Could not read the mesh entering %s" % plug.split(".")[0])
+        self.fn = om.MFnMesh(self.data)
+        self.world = om.MMatrix(world)
+        self.inverse = self.world.inverse()
+
+    def points(self, ids):
+        local = self.fn.getPoints(om.MSpace.kObject)
+        return [tuple(om.MPoint(local[i]) * self.world)[:3] for i in ids]
+
+    def getClosestPointAndNormal(self, point, _space=None):  # noqa: N802 - same call as MFnMesh
+        closest, normal, face = self.fn.getClosestPointAndNormal(om.MPoint(point) * self.inverse,
+                                                                 om.MSpace.kObject)
+        return closest * self.world, (om.MVector(normal) * self.world).normal(), face
+
+
+def _split_stops(count, anchor, total):
+    """``count`` loop lengths for a split loop: both corners, then the upper and lower lips evenly."""
+    inner = max(count - 2, 0)
+    upper = (inner + 1) // 2
+    lower = inner - upper
+    stops = [0.0] + [anchor * k / (upper + 1) for k in range(1, upper + 1)] + [anchor]
+    return stops + [anchor + (total - anchor) * k / (lower + 1) for k in range(1, lower + 1)]
+
+
+class _Segment(object):
+    """A live follow curve through some loop vertices (an upper / lower lip, or the whole loop)."""
+
+    def __init__(self, ids, closed):
+        self.ids = ids  # loop vertex indices, in curve order (a closed one repeats its first)
+        self.closed = closed
+        self.curve = self.shape = self.info = self.ribbon = self.uv_pin = None
+        self.pins = 0
+
+    def build(self, points, vertices, parent, name):
+        curve = cmds.curve(degree=1, point=[tuple(points[i]) for i in self.ids], name=naming.unique_name(name))
+        self.curve = cmds.parent(curve, parent)[0]
+        self.shape = cmds.listRelatives(self.curve, shapes=True, fullPath=True)[0]
+        self.info = _CurveInfo(self.curve, self.closed)
+        for cv, vertex in enumerate(self.ids):
+            cmds.connectAttr(vertices[vertex], "%s.controlPoints[%d]" % (self.shape, cv), force=True)
+
+    def param(self, along):
+        return self.info.param_at(along)
+
+    def _info(self, label, side, param):
+        node = cmds.createNode("pointOnCurveInfo", name=naming.unique_name(naming.compose(label, side, "POCI")),
+                               skipSelect=True)
+        cmds.connectAttr(self.shape + ".worldSpace[0]", node + ".inputCurve")
+        cmds.setAttr(node + ".parameter", param)
+        return node
+
+    def point(self, label, side, param):
+        return self._info(label + "On", side, param) + ".position"
+
+    def tangent(self, label, side, param):
+        """The lip's direction at ``param``: from half a span before to half a span after (smooth on vertices)."""
+        low, high = self.info.fn.knotDomain
+        params = []
+        for step in (-0.5, 0.5):
+            value = param + step
+            if self.closed:
+                value = low + (value - low) % (high - low)
+            params.append(min(max(value, low), high))
+        if params[1] - params[0] < 1e-6:
+            params = [low, high]
+        direction = cmds.createNode("plusMinusAverage", name=naming.unique_name(
+            naming.compose(label + "Along", side, "PMA")), skipSelect=True)
+        cmds.setAttr(direction + ".operation", 2)  # after - before
+        cmds.connectAttr(self.point(label + "After", side, params[1]), direction + ".input3D[0]")
+        cmds.connectAttr(self.point(label + "Before", side, params[0]), direction + ".input3D[1]")
+        return direction + ".output3D"
+
+
+def _segments(points, closed, split, anchor_index):
+    """The follow curves: an upper and a lower lip from the left corner (+X) to the right one, else one."""
+    count = len(points)
+    if not closed:
+        return [_Segment(list(range(count)), False)]
+    if not split:
+        return [_Segment(list(range(count)) + [0], True)]
+    upper = list(range(anchor_index + 1))
+    lower = [0] + list(range(count - 1, anchor_index - 1, -1))
+    return [_Segment(upper, False), _Segment(lower, False)]
 
 
 def _corner_indices(stops, anchor, closed):

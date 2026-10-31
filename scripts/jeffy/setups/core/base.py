@@ -61,6 +61,8 @@ class Setup(object):
     DESCRIPTION = ""
     SLOTS = ()
     OPTIONS = ()
+    #: option keys of earlier versions: dropped (not an error) when a stored setup is rebuilt
+    RETIRED_OPTIONS = ()
     #: guide keys shown by Preview
     GUIDES = ()
     MIRRORABLE = True
@@ -264,7 +266,7 @@ class Setup(object):
     def create(cls, slots=None, options=None, name=None, side=None, guides=None, rig=None, _mirror_of=None):
         plugins.ensure_matrix_plugins()
         slots = cls.resolve_slots(slots)
-        options = schema.resolve_options(cls.option_schema(), options)
+        options = schema.resolve_options(cls.option_schema(), options, cls.RETIRED_OPTIONS)
         name, side = cls.resolve_name_side(slots, options, name, side)
         cls.validate(slots, options)
         cls._check_joints_free(slots)
@@ -319,7 +321,7 @@ class Setup(object):
         if not cls.GUIDES:
             raise SetupError("%s has no guides to preview" % cls.LABEL)
         slots = cls.resolve_slots(slots)
-        options = schema.resolve_options(cls.option_schema(), options)
+        options = schema.resolve_options(cls.option_schema(), options, cls.RETIRED_OPTIONS)
         name, side = cls.resolve_name_side(slots, options, name, side)
         cls.validate(slots, options)
         values = cls.collect_guides(slots, options, name, side, guides)

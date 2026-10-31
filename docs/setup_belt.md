@@ -427,20 +427,29 @@ The node list comes from the setup's tag.
   octahedron, square, locator), ribbon width (auto), master control, jaw follow
   defaults (upper 0, corners 0.5, lower 1), corner falloff (0.25), size,
   game safe.
-- **Curve: Cubic or Linear.** Cubic (default) is a smooth curve through the
-  loop: it rounds off between the vertices, so on a low-res loop the controls
-  and joints float a little off the edges. Linear runs straight from vertex to
-  vertex, exactly on the edge loop (the ribbon and the master outline too).
-- **Follow** (along lip): how the controls turn when the blendShape moves the
-  lips. *Along lip* aims each control along the loop (from its previous
-  neighbour to its next) and keeps it facing out of the face, so cartoony
-  stretches never twist it. *Position only* keeps the rest orientation. *Mesh*
-  turns with the triangles under the control (the older behaviour; it can
-  twist a lot on strong stretches).
-- **Ribbon facing** (out of face): the ribbon's width points out of the face,
-  like a fence around the mouth, so the upper and lower lips never fold into
-  each other when the mouth closes. *Across lip* lays it flat in the lips'
-  plane (the older behaviour).
+- **How it follows (two layers).**
+  - *Follow layer, exact*: a pin on **every vertex** of the loop reads the
+    blendShape's result (before the skin), and live straight-line curves run
+    through them. Every control and bind joint is glued to its own spot on
+    its curve (between the same two vertices), so they stay **exactly on the
+    edge loop** for any shape: an O, a closed line, a smile.
+  - *Offset layer*: small ribbons at the **rest** shape carry only the
+    controls' own motion. Each bind joint reads its offset there and carries
+    it onto its follow spot. The rest ribbons never deform with the
+    blendShape, so they can't fold when the mouth closes.
+- **Split at corners** (on, closed loops): an upper and a lower lip, each from
+  corner to corner, sharing **one control per corner** (it drives both lips).
+  When the lips close onto each other nothing folds at the corners. Off: one
+  loop all around.
+- **Follow** (along lip): how the controls and joints turn. *Along lip* aims
+  along the lip (a corner aims between both lips) and keeps facing out of the
+  face. *Position only* keeps the rest orientation. *Mesh* turns with the
+  triangles under the point (can twist on cartoony stretches).
+- **Ribbon facing** (out of face): which way the controls' rest ribbon is
+  wide, so which way rotating a control rolls the lip.
+- **Built on the neutral face**: the blendShape is switched off while the
+  setup builds (and put back as it was), so shapes dialed in at that moment
+  don't matter.
 - **Outline points** (16): the master's outline has its own points, spread
   evenly along the loop (not one per control), each following the blendShape
   and the jaw live.
@@ -460,16 +469,16 @@ The node list comes from the setup's tag.
     middle of the upper lip never follows the jaw;
   - a **master** control: moving, rotating or scaling it moves every control.
     Its outline follows the lips' blendShape and jaw pose live;
-  - its own **bind joints** riding a ribbon driven by the controls.
-- **No double transformation**: a hidden base ribbon follows only the
-  blendShape. Skin the mesh to the bind joints yourself, then press
+  - its own **bind joints**, exactly on the loop, plus the controls' offset.
+- **No double transformation**: each joint's follow spot is the blendShape's
+  result alone. Skin the mesh to the bind joints yourself, then press
   **Connect skin** in the Setups list (or `setup.connect_skin()`): each joint's
-  `bindPreMatrix` becomes the inverse of its base point, so the skin only adds
-  what the controls, the jaw and the head did.
+  `bindPreMatrix` becomes the inverse of its follow spot, so the skin only
+  adds what the controls, the master, the jaw and the head did.
 - **Rebuild keeps your skin**: the same skinned joints are reused and
   bindPreMatrix is wired again.
 - **Game safe**: engines don't read live bindPreMatrix, so each joint carries
-  only the offset (`rest * inverse(base) * driven`) under the head bind joint.
+  only the offset (`rest * inverse(follow) * driven`) under the head bind joint.
   A normal bind then gives the same result. In that mode the joints sit at
   their rest spot plus the controls' offset, not on the deformed lip.
   That's expected: the skin result is the same as with live bindPreMatrix,
