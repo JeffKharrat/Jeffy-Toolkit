@@ -6,8 +6,11 @@ setup it follows (the Jaw / Hinge for lips, the head's setup otherwise):
 * controls along the loop **follow the blendShape result**, and the animator
   can still move them on top,
 * their own **bind joints** ride a ribbon driven by the controls,
-* with a Jaw setup, each control has ``jawFollow`` (upper lip 0, corners 0.5,
-  lower lip 1 by default),
+* with a Jaw setup, every control **and every bind joint** follows the jaw by
+  where it sits: upper lip 0, corners 0.5, lower lip 1 (``upperJawFollow``,
+  ``cornerJawFollow``, ``lowerJawFollow`` on the master, live), blended only
+  near the corners (*Corner falloff*). The ribbon itself carries the controls'
+  motion without the jaw, so the upper lip never drifts with it,
 * a **master** control moves (rotates, scales) every control at once; its
   curve outline follows the lips' shape live.
 
@@ -33,19 +36,16 @@ deformers; add targets to it whenever.
 
 from maya import cmds
 from maya.api import OpenMaya as om
-from maya.api import OpenMayaAnim as oma
 
 from jeffy.core import attributes, mathlib, matrix, naming, nodes, transform
 from jeffy.joints import tools as joint_tools
-from jeffy.setups.core import attach, controls, scene
+from jeffy.setups.core import attach, controls, drive, scene
 from jeffy.setups.core import edges as edge_tools
 from jeffy.setups.core import tag as tag_module
 from jeffy.setups.core.base import Setup
 from jeffy.setups.core.schema import EDGES, NODE, SIZE_OPTION, Option, SetupError, Slot
 from jeffy.setups.tools import common
 
-#: skin weights of deleted Edge Ribbons, put back by the next build of the same name / side (rebuild)
-_STASH = {}
 #: R side controls: X points outward (-X), Y up, so both sides move the same way
 _RIGHT_FRAME = mathlib.from_axes((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
 OUTLINE_SCALE = 1.3
@@ -82,11 +82,14 @@ class EdgeRibbon(Setup):
         Option("master", "Master control", True,
                tip="A control that moves every control at once; its outline follows the lips' shape"),
         Option("upper_follow", "Upper jaw follow", 0.0, minimum=0.0, maximum=1.0,
-               tip="Default jawFollow of the upper lip controls (Jaw setup only)"),
+               tip="Default upperJawFollow (Jaw setup only): how much the upper lip follows the jaw"),
         Option("corner_follow", "Corner jaw follow", 0.5, minimum=0.0, maximum=1.0,
-               tip="Default jawFollow of the corner controls (Jaw setup only)"),
+               tip="Default cornerJawFollow (Jaw setup only): how much the corners follow the jaw"),
         Option("lower_follow", "Lower jaw follow", 1.0, minimum=0.0, maximum=1.0,
-               tip="Default jawFollow of the lower lip controls (Jaw setup only)"),
+               tip="Default lowerJawFollow (Jaw setup only): how much the lower lip follows the jaw"),
+        Option("corner_falloff", "Corner falloff", 0.25, minimum=0.0, maximum=1.0, step=0.05,
+               tip="How far the corners' jaw follow blends into each lip, as a share of the lip's length "
+                   "(Jaw setup only). 0: only the corner itself; the rest of the upper lip never follows the jaw."),
         SIZE_OPTION,
         Option("game_safe", "Game safe", False,
                tip="On: the bind joints carry only the controls' offset (no live bindPreMatrix), under the head "
@@ -139,6 +142,7 @@ class EdgeRibbon(Setup):
     def build_setup(self):
         options = self.options
         base = self.base
+        self._reused = []
         edges = self.slot_nodes("edges")
         mesh, shape = edge_tools.mesh_of(edges)
         _ids, points, closed = edge_tools.ordered_loop(edges)
@@ -169,6 +173,13 @@ class EdgeRibbon(Setup):
         head_rest = controls.rest_matrix(head)
         mesh_world = matrix.get_world_matrix(mesh)
         jaw_space = self._jaw_space(head_rest, jaw) if jaw else None
+        if jaw:  # blends happen in a frame at the jaw's pivot: half a jaw follow is half the jaw's rotation
+            pivot = mathlib.orthonormalize(controls.rest_matrix(jaw))
+            head_pivot = _mult(self._n("HeadPivot", "MM"), [mathlib.mult(pivot, mathlib.inverse(head_rest)),
+                                                            head_world])
+            jaw_pivot = _mult(self._n("JawPivot", "MM"), [mathlib.mult(pivot, mathlib.inverse(
+                controls.rest_matrix(jaw))), jaw + ".worldMatrix[0]"])
+            from_pivot = mathlib.mult(head_rest, mathlib.inverse(pivot))
 
         # blendShape follow pins (the blendShape output, before the skin)
         pin = cmds.createNode("proximityPin", name=naming.unique_name(self._n("Follow", "proximityPin")),
@@ -190,14 +201,48 @@ class EdgeRibbon(Setup):
             local_plug = nodes.mult_matrix([master.node + ".matrix", offset + ".matrix"],
                                            name=self._n("MasterLocal", "MM"))
 
+        # jaw follow: upper / corner / lower, blended around the corners (the same rule for controls and joints)
+        corner_lengths = [control_stops[i] for i in sorted(corners)] if closed else [0.0, length]
+        falloff = options["corner_falloff"] * (length / 2.0)
+
+        def corner_amount(s):
+            distances = [abs(s - c) for c in corner_lengths]
+            if closed:
+                distances = [min(d, length - d) for d in distances]
+            nearest = min(distances)
+            if falloff <= 1e-9:
+                return 1.0 if nearest <= eps else 0.0
+            return 1.0 - mathlib.smoothstep(0.0, falloff, nearest)
+
+        jaw_attrs = self._jaw_attrs(master.node) if (jaw_space and master is not None) else None
+
+        def jaw_follow(name, side, s, role):
+            """The head / jaw blend of a point of the loop (a world matrix plug)."""
+            amount = 1.0 if role == "corner" else corner_amount(s)
+            lip = jaw_attrs["upper" if role == "upper" else "lower"]
+            if amount >= 0.999:
+                weight = jaw_attrs["corner"]
+            elif amount <= 0.001:
+                weight = lip
+            else:
+                weight = nodes.blend(lip, jaw_attrs["corner"], amount, name=naming.compose(name + "Jaw", side,
+                                                                                           "BLD"))
+            blended = common.blend_matrices(naming.compose(name + "JawFollow", side, "BM"), head_pivot, jaw_pivot,
+                                            weight)
+            return _mult(naming.compose(name + "JawFollow", side, "MM"), [from_pivot, blended])
+
         labels = _labels(control_points, corners, closed, eps, self.side)
-        ctls, drivers, bases, follows = [], [], [], []
+        ctls, drivers, bases, follows, to_worlds = [], [], [], [], []
         for i, (point, (label, ctl_side, role)) in enumerate(zip(control_points, labels)):
             label = self.name + label
             rest = self._frame(point, ctl_side)
             cmds.setAttr("%s.inputMatrix[%d]" % (pin, i), mathlib.mult(rest, mathlib.inverse(mesh_world)),
                          type="matrix")
             pin_plug = "%s.outputMatrix[%d]" % (pin, i)
+            # the pin's output space (world or the mesh's own, by Maya version / settings): map its rest
+            # value back onto the control's rest frame, so nothing is placed twice
+            to_world = mathlib.mult(mathlib.inverse(list(cmds.getAttr(pin_plug))), rest)
+            to_worlds.append(to_world)
             ctl = self.control("c%02d" % i, label, shape=options["control_shape"], size=size, axis="z",
                                world_matrix=rest,
                                lock=("s", "v"), secondary=True, side=ctl_side)
@@ -205,29 +250,32 @@ class EdgeRibbon(Setup):
                 ctl.set_parent_tag(master.node)
             follow = head_world
             if jaw_space:
-                default = {"corner": options["corner_follow"], "upper": options["upper_follow"],
-                           "lower": options["lower_follow"]}[role]
-                weight = attributes.add_attr(ctl.node, "jawFollow", "float", default=default, minimum=0.0,
-                                             maximum=1.0)
-                cmds.setAttr(weight, default)
-                follow = common.blend_matrices(naming.compose(label + "JawFollow", ctl_side, "BM"), head_world,
-                                               jaw_space, weight)
+                if jaw_attrs is None:  # no master: the first control holds the jaw follow attributes
+                    jaw_attrs = self._jaw_attrs(ctl.node)
+                follow = jaw_follow(label, ctl_side, control_stops[i], role)
             follows.append(follow)
             # ZRO = blendShape pose (rest world) [* master, around its pivot] * head / jaw motion
             inputs = [pin_plug]
             if local_plug:
-                inputs += [mathlib.mult(mesh_world, mathlib.inverse(master_rest)), local_plug,
+                inputs += [mathlib.mult(to_world, mathlib.inverse(master_rest)), local_plug,
                            mathlib.mult(master_rest, mathlib.inverse(head_rest))]
             else:
-                inputs += [mathlib.mult(mesh_world, mathlib.inverse(head_rest))]
+                inputs += [mathlib.mult(to_world, mathlib.inverse(head_rest))]
             inputs += [follow, matrix.parent_inverse_plug(ctl.zero)]
             zero_mm = _mult(naming.compose(label + "Follow", ctl_side, "MM"), inputs)
             transform.reset(ctl.zero)
             cmds.connectAttr(zero_mm, ctl.zero + ".offsetParentMatrix", force=True)
 
-            driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=ctl.node)
+            if jaw_space:  # the ribbon carries the control's motion without the jaw (each joint adds its own)
+                driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=hidden)
+                no_jaw = nodes.inverse_matrix(follow, name=naming.compose(label + "NoJaw", ctl_side, "UTL"))
+                cmds.connectAttr(_mult(naming.compose(label + "Drv", ctl_side, "MM"),
+                                       [ctl.node + ".worldMatrix[0]", no_jaw, head_world]),
+                                 driver + ".offsetParentMatrix")
+            else:
+                driver = joint_tools.create_joint(naming.compose(label + "Drv", ctl_side, "joint"), parent=ctl.node)
             base_joint = joint_tools.create_joint(naming.compose(label + "Base", ctl_side, "joint"), parent=hidden)
-            cmds.connectAttr(_mult(naming.compose(label + "Base", ctl_side, "MM"), [pin_plug, mesh_world]),
+            cmds.connectAttr(_mult(naming.compose(label + "Base", ctl_side, "MM"), [pin_plug, to_world]),
                              base_joint + ".offsetParentMatrix")
             for joint in (driver, base_joint):
                 cmds.setAttr(joint + ".visibility", 0)
@@ -236,7 +284,7 @@ class EdgeRibbon(Setup):
             bases.append(base_joint)
 
         if master is not None:
-            self._outline(master, pin, follows, mesh_world, head, head_rest, master_rest, closed)
+            self._outline(master, pin, follows, to_worlds, head, head_rest, master_rest, closed)
 
         # the ribbons: driven (controls) and base (blendShape only)
         width = options["width"] or length * 0.04
@@ -269,7 +317,7 @@ class EdgeRibbon(Setup):
             group = self.group("Joints", parent=rig.rig_group("skeleton") if rig is not None else None)
         radius = size * 0.3
         binds, pre = [], []
-        for k, (point, (label, joint_side, _role)) in enumerate(zip(joint_points, joint_labels)):
+        for k, (point, (label, joint_side, role)) in enumerate(zip(joint_points, joint_labels)):
             label = self.name + label
             u, _v = _surface_uv(ribbon, point)
             for uv_pin in pins.values():
@@ -279,15 +327,16 @@ class EdgeRibbon(Setup):
             base_plug = "%s.outputMatrix[%d]" % (pins["base"], k)
             pin_rest = mathlib.orthonormalize(common.plug_matrix(driven_plug))
             joint_rest = self._frame(mathlib.get_translation(pin_rest), joint_side)
-            joint = joint_tools.create_joint(naming.compose(label, joint_side, "joint"),
-                                             parent=parent_joint or group,
-                                             position=mathlib.get_translation(joint_rest), radius=radius)
-            matrix.set_joint_orient_from_matrix(joint, joint_rest)
+            joint = self._bind_joint(naming.compose(label, joint_side, "joint"), parent_joint or group, joint_rest,
+                                     radius)
             driven = common.offset_plug(naming.compose(label + "Driven", joint_side, "MM"), driven_plug, joint_rest,
                                         common.plug_matrix(driven_plug))
             based = common.offset_plug(naming.compose(label + "BindBase", joint_side, "MM"), base_plug, joint_rest,
                                        common.plug_matrix(base_plug))
             inverse = nodes.inverse_matrix(based, name=naming.compose(label + "BindPre", joint_side, "UTL"))
+            if jaw_space:  # the joint's own jaw follow, on top of the jaw-free ribbon
+                driven = _mult(naming.compose(label + "Jaw", joint_side, "MM"), [
+                    driven, head + ".worldInverseMatrix[0]", jaw_follow(label, joint_side, joint_stops[k], role)])
             if game_safe:  # rest * inverse(base) * driven: only the offset, no live bindPreMatrix
                 driven = _mult(naming.compose(label + "Offset", joint_side, "MM"), [joint_rest, inverse, driven])
             self.add_output("b%02d" % k, driven, joint=joint, label=label)
@@ -297,7 +346,33 @@ class EdgeRibbon(Setup):
         tag_module.set_nodes(self.tag, "bind_pre", pre)
         cmds.delete(info_curve)
         cmds.select(clear=True)
-        self._restore_skin()
+        self._wire_skin()
+
+    def _bind_joint(self, name, parent, rest, radius):
+        """A bind joint: a skinned joint kept by an earlier delete of this setup (same name), else a new one.
+
+        Reusing it keeps the mesh's skin exactly as it is: its weights are never touched, so skin layers,
+        ngSkinTools and plain weights all keep working.
+        """
+        found = cmds.ls(name, type="joint") or []
+        joint = found[0] if len(found) == 1 else None
+        if joint and (scene.setup_driving(joint) is not None or drive.incoming(joint) or not _skin_slots(joint)):
+            joint = None  # driven by something else, or not skinned: make a new one
+        if joint is None:
+            joint = joint_tools.create_joint(name, parent=parent, position=mathlib.get_translation(rest),
+                                             radius=radius)
+        else:
+            current = cmds.listRelatives(joint, parent=True, fullPath=True)
+            if parent and (not current or current[0] != cmds.ls(parent, long=True)[0]):
+                joint = cmds.parent(joint, parent)[0]
+            for attr in ("translate", "rotate", "scale"):
+                for axis in "XYZ":
+                    cmds.setAttr("%s.%s%s" % (joint, attr, axis), lock=False)
+            cmds.setAttr(joint + ".scale", 1, 1, 1)
+            cmds.xform(joint, worldSpace=True, translation=mathlib.get_translation(rest))
+            self._reused.append(joint)
+        matrix.set_joint_orient_from_matrix(joint, rest)
+        return joint
 
     def _n(self, label, suffix):
         return naming.compose(self.name + label, self.side, suffix)
@@ -337,6 +412,19 @@ class EdgeRibbon(Setup):
             raise SetupError("%s has nothing to follow" % base.describe())
         return head, None
 
+    def _jaw_attrs(self, node):
+        """Live jaw follow attributes (upper / corner / lower) on ``node``: the controls and joints use them."""
+        options = self.options
+        attributes.add_separator(node, "jaw")
+        result = {}
+        for key, label, default in (("upper", "upperJawFollow", options["upper_follow"]),
+                                    ("corner", "cornerJawFollow", options["corner_follow"]),
+                                    ("lower", "lowerJawFollow", options["lower_follow"])):
+            plug = attributes.add_attr(node, label, "float", default=default, minimum=0.0, maximum=1.0)
+            cmds.setAttr(plug, default)
+            result[key] = plug
+        return result
+
     def _jaw_space(self, head_rest, jaw):
         """The head's rest pose carried by the jaw (equals the head's rest when the jaw is closed)."""
         return _mult(self._n("JawSpace", "MM"), [mathlib.mult(head_rest, mathlib.inverse(
@@ -360,7 +448,7 @@ class EdgeRibbon(Setup):
             return joints[0]
         raise SetupError("Game safe: found no bind joint to put the ribbon joints under")
 
-    def _outline(self, master, pin, follows, mesh_world, head, head_rest, master_rest, closed):
+    def _outline(self, master, pin, follows, to_worlds, head, head_rest, master_rest, closed):
         """The master's curve follows the controls' blendShape + jaw pose (not the controls: no cycle)."""
         count = len(follows)
         if closed:
@@ -387,7 +475,7 @@ class EdgeRibbon(Setup):
         points = []
         for i, follow in enumerate(follows):
             mm = _mult(naming.unique_name(self._n("Outline%02d" % i, "MM")), [
-                "%s.outputMatrix[%d]" % (pin, i), mathlib.mult(mesh_world, mathlib.inverse(head_rest)), follow,
+                "%s.outputMatrix[%d]" % (pin, i), mathlib.mult(to_worlds[i], mathlib.inverse(head_rest)), follow,
                 head + ".worldInverseMatrix[0]", to_local])
             decompose = nodes.decompose_matrix(mm, name=self._n("Outline%02d" % i, "DM"))
             points.append(decompose + ".outputTranslate")
@@ -418,25 +506,54 @@ class EdgeRibbon(Setup):
                 count += 1
         return count
 
-    def _restore_skin(self):
-        """Put back the skin weights a rebuild took away, then wire the skin."""
-        stash = _STASH.pop((self.name, self.side), None)
-        if stash:
-            _restore_weights(stash, self.bind_joints())
+    def _wire_skin(self):
+        """Skinned bind joints (reused after a rebuild): live bindPreMatrix, or their rest pose in game safe."""
         if not self.options.get("game_safe"):
             self.connect_skin()
+            return
+        for joint in self.bind_joints():
+            for skin, index in _skin_slots(joint):
+                _set_bind_pre(skin, index, joint)
 
     def before_delete(self):
-        joints = [joint for joint in self.bind_joints() if cmds.objExists(joint)]
-        stash = _stash_weights(joints)
-        if stash:
-            _STASH[(self.name, self.side)] = stash
-        for joint in joints:  # the skin keeps working without them (weights go to the other influences)
-            for skin, _index in _skin_slots(joint):
-                cmds.skinCluster(skin, edit=True, removeInfluence=joint)
         self._remove_created_blendshape()
 
+    def after_release(self):
+        """Skinned bind joints stay, at rest and out of the setup, so the skin keeps its weights.
+
+        Building the setup again (same name) reuses them. Delete them yourself once they are out of the skin.
+        """
+        kept = []
+        for joint in self.bind_joints():
+            slots = _skin_slots(joint) if cmds.objExists(joint) else []
+            if not slots:
+                continue
+            for skin, index in slots:
+                _set_bind_pre(skin, index, joint)
+            kept.append(self._park(joint))
+        if kept:
+            keep = set(cmds.ls(kept, long=True))
+            owned = tag_module.get_nodes(self.tag, "owned")
+            tag_module.set_nodes(self.tag, "owned",
+                                 [node for node in owned if (cmds.ls(node, long=True) or [node])[0] not in keep])
+            print("[Jeffy] %s: kept its %d skinned bind joints at rest; building it again reuses them"
+                  % (self.describe(), len(kept)))
+
+    def _park(self, joint):
+        """Move a kept joint out of the setup's groups (into the rig's skeleton group)."""
+        owned = set(cmds.ls(tag_module.get_nodes(self.tag, "owned"), long=True) or []) \
+            if cmds.objExists(self.tag) else set()
+        parent = cmds.listRelatives(joint, parent=True, fullPath=True)
+        if parent and (parent[0] in owned or (not owned and cmds.nodeType(parent[0]) != "joint")):
+            rig = self.rig if cmds.objExists(self.tag) else None
+            target = rig.rig_group("skeleton") if rig is not None else None
+            joint = cmds.parent(joint, target)[0] if target else cmds.parent(joint, world=True)[0]
+        return joint
+
     def on_abort(self):
+        for joint in getattr(self, "_reused", []):  # a failed build must not delete the skinned joints it reused
+            if cmds.objExists(joint):
+                self._park(joint)
         self._remove_created_blendshape()
 
     def _remove_created_blendshape(self):
@@ -502,61 +619,12 @@ def _skin_slots(joint):
     return result
 
 
-def _stash_weights(joints):
-    """Weights of every vertex the joints influence (all influences), per skinCluster."""
-    skins = {}
-    for joint in joints:
-        for skin, _index in _skin_slots(joint):
-            skins.setdefault(skin, []).append(joint)
-    result = []
-    for skin, members in skins.items():
-        geometry = (cmds.skinCluster(skin, query=True, geometry=True) or [None])[0]
-        if not geometry:
-            continue
-        fn = oma.MFnSkinCluster(_mobject(skin))
-        vertices = set()
-        for joint in members:
-            selection, _weights = fn.getPointsAffectedByInfluence(_dag_path(joint))
-            for i in range(selection.length()):
-                _dag, component = selection.getComponent(i)
-                if not component.isNull():
-                    vertices.update(om.MFnSingleIndexedComponent(component).getElements())
-        rows = {}
-        for vertex in vertices:
-            name = "%s.vtx[%d]" % (geometry, vertex)
-            influences = cmds.skinPercent(skin, name, query=True, transform=None, ignoreBelow=1e-6) or []
-            values = cmds.skinPercent(skin, name, query=True, value=True, ignoreBelow=1e-6) or []
-            rows[vertex] = [(naming.short_name(i), w) for i, w in zip(influences, values)]
-        result.append({"skin": skin, "geometry": geometry, "rows": rows,
-                       "joints": [naming.short_name(joint) for joint in members]})
-    return result
-
-
-def _restore_weights(stash, joints):
-    names = dict((naming.short_name(joint), joint) for joint in joints)
-    for entry in stash:
-        skin = entry["skin"]
-        if not cmds.objExists(skin) or not cmds.objExists(entry["geometry"]):
-            continue
-        current = set(naming.short_name(i) for i in cmds.skinCluster(skin, query=True, influence=True) or [])
-        wanted = set(entry["joints"]) | set(name for row in entry["rows"].values() for name, _w in row)
-        for name in sorted(wanted - current):
-            if name in names:
-                cmds.skinCluster(skin, edit=True, addInfluence=names[name], weight=0.0, lockWeights=False)
-        influences = cmds.skinCluster(skin, query=True, influence=True) or []
-        locks = {}
-        for influence in influences:
-            if cmds.attributeQuery("liw", node=influence, exists=True):
-                locks[influence] = cmds.getAttr(influence + ".liw")
-                cmds.setAttr(influence + ".liw", 0)
-        valid = set(naming.short_name(i) for i in influences)
-        for vertex, row in entry["rows"].items():
-            pairs = [(name, weight) for name, weight in row if name in valid]
-            if pairs:
-                cmds.skinPercent(skin, "%s.vtx[%d]" % (entry["geometry"], vertex), transformValue=pairs,
-                                 zeroRemainingInfluences=True, normalize=True)
-        for influence, value in locks.items():
-            cmds.setAttr(influence + ".liw", value)
+def _set_bind_pre(skin, index, joint):
+    """A static bindPreMatrix: the joint's current (rest) world inverse."""
+    plug = "%s.bindPreMatrix[%d]" % (skin, index)
+    for source in cmds.listConnections(plug, source=True, destination=False, plugs=True) or []:
+        cmds.disconnectAttr(source, plug)
+    cmds.setAttr(plug, cmds.getAttr(joint + ".worldInverseMatrix[0]"), type="matrix")
 
 
 # ---------------------------------------------------------------------------
@@ -655,6 +723,18 @@ def _corner_indices(stops, anchor, closed):
 def _labels(points, corners, closed, eps, setup_side):
     """``[(label, side, role)]``: role ``corner`` / ``upper`` / ``lower``, numbered from the centre out."""
     corner_y = sum(points[i][1] for i in corners) / float(len(corners))
+    ordered = sorted(corners)
+    if closed:  # the loop runs from the left corner over the upper lip first (edges.ordered_loop)
+        def role_of(index):
+            if index in corners:
+                return "corner"
+            return "upper" if ordered[0] < index < ordered[-1] else "lower"
+    else:  # one lip per chain: it bulges below its ends (lower lip) or above them (upper lip)
+        interior = [point[1] for index, point in enumerate(points) if index not in corners] or [corner_y]
+        chain_role = "lower" if sum(interior) / len(interior) < corner_y else "upper"
+
+        def role_of(index):
+            return "corner" if index in corners else chain_role
     entries = []
     for i, point in enumerate(points):
         if point[0] > eps:
@@ -665,13 +745,7 @@ def _labels(points, corners, closed, eps, setup_side):
             side = naming.SIDE_CENTER
         if setup_side in (naming.SIDE_LEFT, naming.SIDE_RIGHT):
             side = setup_side  # a brow on one side: every control on that side
-        if i in corners and closed:
-            role = "corner"
-        else:
-            role = "upper" if point[1] >= corner_y - eps else "lower"
-            if not closed and i in corners:
-                role = "corner"
-        entries.append((side, role))
+        entries.append((side, role_of(i)))
     groups = {}
     for i, (side, role) in enumerate(entries):
         groups.setdefault((side, role if closed else ""), []).append(i)

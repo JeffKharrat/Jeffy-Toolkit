@@ -241,7 +241,9 @@ The **Spaces** tool edits them later, on any control.
   looks and behaves the same.
 - **Setups** (scene list): a tree of setups and their layers. Click one to load
   it back into its panel. It also has Select controls, Rebuild, Delete,
-  IK/FK match and seamless space switch.
+  IK/FK match and seamless space switch. **Reset pose (whole rig)** puts every control back
+  to zero (and its attributes to their defaults with *Attributes too*); with
+  controls selected, only those. Also in the Jeff Inventory menu.
 - Opens from the Jeff Inventory menu, the **JEFF** shelf button (the green
   eye), or `jeffy.show()`.
 - The window keeps Maya's grey style. Its header is a soft dot-matrix strip
@@ -423,12 +425,22 @@ The node list comes from the setup's tag.
 - Options: controls (8; on a closed loop with an even count both corners get
   one), bind joints (20), control shape (sphere, circle, cube, diamond,
   octahedron, square, locator), ribbon width (auto), master control, jaw follow
-  defaults (upper 0, corners 0.5, lower 1), size, game safe.
+  defaults (upper 0, corners 0.5, lower 1), corner falloff (0.25), size,
+  game safe.
+- **Skinned joints are kept**: deleting the setup leaves its skinned bind
+  joints in the skin, at rest; building it again (same name) or rebuilding
+  reuses them, so weights are never touched (skin layers, ngSkinTools and
+  plain weights all keep working).
 - Creates:
   - controls along the loop that **follow the blendShape** (their channels
     stay at 0, you animate on top), named from the centre out:
     `C_lipsUpper`, `L_lipsUpper01`, `L_lipsCorner`, `C_lipsLower`...;
-  - `jawFollow` on each control when the base is a Jaw setup;
+  - with a Jaw setup, jaw follow for every control **and every bind joint**
+    by where it sits: upper lip 0, corners 0.5, lower lip 1, set live with
+    `upperJawFollow`, `cornerJawFollow` and `lowerJawFollow` on the master.
+    It blends only near the corners (*Corner falloff*, a share of each lip's
+    length). The ribbon carries the controls' motion without the jaw, so the
+    middle of the upper lip never follows the jaw;
   - a **master** control: moving, rotating or scaling it moves every control.
     Its outline follows the lips' blendShape and jaw pose live;
   - its own **bind joints** riding a ribbon driven by the controls.
@@ -437,9 +449,8 @@ The node list comes from the setup's tag.
   **Connect skin** in the Setups list (or `setup.connect_skin()`): each joint's
   `bindPreMatrix` becomes the inverse of its base point, so the skin only adds
   what the controls, the jaw and the head did.
-- **Rebuild keeps your skin**: the joints' weights are saved before the delete
-  and put back on the new joints (same names), and bindPreMatrix is wired
-  again.
+- **Rebuild keeps your skin**: the same skinned joints are reused and
+  bindPreMatrix is wired again.
 - **Game safe**: engines don't read live bindPreMatrix, so each joint carries
   only the offset (`rest * inverse(base) * driven`) under the head bind joint.
   A normal bind then gives the same result. In that mode the joints sit at
