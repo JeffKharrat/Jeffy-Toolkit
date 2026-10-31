@@ -8,6 +8,10 @@ documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Weights to ribbon** (Setups list): moves a limb's skin weights onto its
+  Ribbon joints, split evenly along each bone, with the tip fading into the
+  end joint. Other influences are untouched, the mesh doesn't move at rest,
+  and it can work on selected vertices only. One undo.
 - **Shape memory.** Control shapes edited by hand (CVs, colour, line width,
   always on top) are saved when a setup is deleted or rebuilt and given back
   at its next build. Untouched controls are not stored. Remembered shapes

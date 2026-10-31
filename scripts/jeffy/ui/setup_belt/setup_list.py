@@ -45,6 +45,9 @@ class SetupsPanel(QtWidgets.QWidget):
             w.button("Delete", self.delete, "Delete the setup and its layers; the joints go back to rest"),
             w.button("Connect skin", self.connect_skin, "Edge Ribbon: after skinning the mesh to its joints, wire "
                                                         "bindPreMatrix so the blendShape moves the mesh only once"),
+            w.button("Weights to ribbon", self.weights_to_ribbon,
+                     "Ribbon (or its limb): move the chain bones' skin weights onto the ribbon joints, split evenly "
+                     "along each bone. Selected vertices only, if you selected some"),
         ))
         from jeffy.ui.setup_belt import node_tabs
 
@@ -168,6 +171,26 @@ class SetupsPanel(QtWidgets.QWidget):
         done, count = common.run("Connect skin", setup.connect_skin, self.status)
         if done:
             common.ok(self.status, "%s: bindPreMatrix wired for %d influence(s)." % (setup.describe(), count))
+
+    def weights_to_ribbon(self):
+        from jeffy.deformers import skin
+        from jeffy.setups.tools import ribbon_weights
+
+        setup = self.selected_setup()
+        if setup is None:
+            return
+        ribbon = ribbon_weights.find_ribbon(setup)
+        if ribbon is None:
+            common._status(self.status, "Weights to ribbon: pick a Ribbon (or the limb it's on)", error=True)
+            return
+        components = [item for item in cmds.ls(selection=True) or [] if "." in item] or None
+        if components and not skin._vertex_selection(components):
+            components = None
+        done, report = common.run("Weights to ribbon", lambda: ribbon_weights.transfer(ribbon, components=components),
+                                  self.status)
+        if done:
+            common.ok(self.status, "%s: %s." % (ribbon.describe(), ", ".join(
+                "%s %d vertices" % (mesh, count) for mesh, count in report)))
 
     def select_controls(self):
         setup = self.selected_setup()
