@@ -12,6 +12,9 @@ documented here. The format follows
   the ribbon and the master outline run straight from vertex to vertex, so
   controls and bind joints sit exactly on the edge loop. Cubic stays the
   default.
+- **Edge Ribbon: Outline points** (16 by default): the master's outline gets its
+  own points along the loop instead of one per control, so it keeps the lips'
+  shape (also with Curve: Linear).
 - **Weights to ribbon** (Setups list): moves a limb's skin weights onto its
   Ribbon joints, split evenly along each bone, with the tip fading into the
   end joint. Other influences are untouched, the mesh doesn't move at rest,

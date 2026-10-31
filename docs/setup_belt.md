@@ -431,6 +431,9 @@ The node list comes from the setup's tag.
   loop: it rounds off between the vertices, so on a low-res loop the controls
   and joints float a little off the edges. Linear runs straight from vertex to
   vertex, exactly on the edge loop (the ribbon and the master outline too).
+- **Outline points** (16): the master's outline has its own points, spread
+  evenly along the loop (not one per control), each following the blendShape
+  and the jaw live.
 - **Skinned joints are kept**: deleting the setup leaves its skinned bind
   joints in the skin, at rest; building it again (same name) or rebuilding
   reuses them, so weights are never touched (skin layers, ngSkinTools and
@@ -459,6 +462,9 @@ The node list comes from the setup's tag.
   only the offset (`rest * inverse(base) * driven`) under the head bind joint.
   A normal bind then gives the same result. In that mode the joints sit at
   their rest spot plus the controls' offset, not on the deformed lip.
+  That's expected: the skin result is the same as with live bindPreMatrix,
+  including moving or rotating a control on top of a blendShape (the offset
+  is measured on the deformed lip, then carried to the rest spot).
 - Mirror: an open chain on one side (a brow) builds the other side too (the
   mesh must be symmetrical).
 

@@ -87,6 +87,9 @@ class EdgeRibbon(Setup):
                tip="0 = automatic (4% of the loop length)"),
         Option("master", "Master control", True,
                tip="A control that moves every control at once; its outline follows the lips' shape"),
+        Option("outline_points", "Outline points", 16, minimum=4, maximum=200,
+               tip="Points on the master's outline, spread evenly along the loop (each follows the blendShape "
+                   "and the jaw live)"),
         Option("upper_follow", "Upper jaw follow", 0.0, minimum=0.0, maximum=1.0,
                tip="Default upperJawFollow (Jaw setup only): how much the upper lip follows the jaw"),
         Option("corner_follow", "Corner jaw follow", 0.5, minimum=0.0, maximum=1.0,
@@ -290,8 +293,24 @@ class EdgeRibbon(Setup):
             drivers.append(driver)
             bases.append(base_joint)
 
-        if master is not None:
-            self._outline(master, pin, follows, to_worlds, head, head_rest, master_rest, closed, linear)
+        if master is not None:  # the outline's own points along the loop (as many as Outline points)
+            outline_stops = info.distribute(options["outline_points"], anchor)
+            outline_points = [info.point_at_length(s) for s in outline_stops]
+            outline_labels = _labels(outline_points, _corner_indices(outline_stops, anchor, closed), closed, eps,
+                                     self.side)
+            outline_plugs, outline_follows, outline_worlds = [], [], []
+            for k, (point, (label, point_side, role)) in enumerate(zip(outline_points, outline_labels)):
+                rest = self._frame(point, point_side)
+                index = len(ctls) + k
+                cmds.setAttr("%s.inputMatrix[%d]" % (pin, index), mathlib.mult(rest, mathlib.inverse(mesh_world)),
+                             type="matrix")
+                plug = "%s.outputMatrix[%d]" % (pin, index)
+                outline_plugs.append(plug)
+                outline_worlds.append(mathlib.mult(mathlib.inverse(list(cmds.getAttr(plug))), rest))
+                outline_follows.append(jaw_follow(self.name + "Outline" + label, point_side, outline_stops[k], role)
+                                       if jaw_space else head_world)
+            self._outline(master, outline_plugs, outline_follows, outline_worlds, head, head_rest, master_rest,
+                          closed, linear)
 
         # the ribbons: driven (controls) and base (blendShape only)
         width = options["width"] or length * 0.04
@@ -456,8 +475,11 @@ class EdgeRibbon(Setup):
             return joints[0]
         raise SetupError("Game safe: found no bind joint to put the ribbon joints under")
 
-    def _outline(self, master, pin, follows, to_worlds, head, head_rest, master_rest, closed, linear=False):
-        """The master's curve follows the controls' blendShape + jaw pose (not the controls: no cycle)."""
+    def _outline(self, master, pins, follows, to_worlds, head, head_rest, master_rest, closed, linear=False):
+        """The master's curve follows the loop's blendShape + jaw pose (not the controls: no cycle).
+
+        ``pins``: one proximityPin output per outline point.
+        """
         count = len(follows)
         if linear:
             cvs = count + 1 if closed else count
@@ -486,7 +508,7 @@ class EdgeRibbon(Setup):
         points = []
         for i, follow in enumerate(follows):
             mm = _mult(naming.unique_name(self._n("Outline%02d" % i, "MM")), [
-                "%s.outputMatrix[%d]" % (pin, i), mathlib.mult(to_worlds[i], mathlib.inverse(head_rest)), follow,
+                pins[i], mathlib.mult(to_worlds[i], mathlib.inverse(head_rest)), follow,
                 head + ".worldInverseMatrix[0]", to_local])
             decompose = nodes.decompose_matrix(mm, name=self._n("Outline%02d" % i, "DM"))
             points.append(decompose + ".outputTranslate")

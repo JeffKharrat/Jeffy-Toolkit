@@ -314,6 +314,13 @@ def test_edge_ribbon_linear_curve_sits_on_the_edges():
     assert off < 1e-3, ("linear: the controls and joints sit on the edges", off)
     shape = cmds.listRelatives("C_lipsMaster_CTL", shapes=True)[0]
     assert cmds.getAttr(shape + ".degree") == 1, "the master outline is linear too"
+    cvs = cmds.getAttr(shape + ".spans") + cmds.getAttr(shape + ".degree")
+    assert cvs == 17, ("16 outline points by default (closed: the first one repeated)", cvs)
+    rest_top = max(cmds.pointPosition(shape + ".cv[%d]" % i, world=True)[1] for i in range(cvs))
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    lifted = max(cmds.pointPosition(shape + ".cv[%d]" % i, world=True)[1] for i in range(cvs))
+    assert lifted > rest_top + LIFT * 0.9, ("the outline follows the blendShape", lifted - rest_top)
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
 
     # still no double transformation
     skin_ring_to(lips, mesh)
