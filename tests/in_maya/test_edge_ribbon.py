@@ -284,3 +284,48 @@ def test_edge_ribbon_lower_lip_chain_follows_the_jaw():
     # past the corner falloff, the joints next to the ends follow like the middle (none is taken for upper lip)
     assert all(d > 0.0 for d in drops), [round(d, 3) for d in drops]
     assert min(drops[2:-2]) > middle * 0.8, [round(d, 3) for d in drops]
+
+
+def _distance_to_loop(point, loop_points):
+    """Closest distance from ``point`` to the closed polyline through ``loop_points``."""
+    best = None
+    for i, a in enumerate(loop_points):
+        b = loop_points[(i + 1) % len(loop_points)]
+        ab = [y - x for x, y in zip(a, b)]
+        ap = [y - x for x, y in zip(a, point)]
+        t = max(0.0, min(1.0, sum(x * y for x, y in zip(ap, ab)) / sum(x * x for x in ab)))
+        closest = [x + t * y for x, y in zip(a, ab)]
+        distance = sum((x - y) ** 2 for x, y in zip(closest, point)) ** 0.5
+        best = distance if best is None else min(best, distance)
+    return best
+
+
+def test_edge_ribbon_linear_curve_sits_on_the_edges():
+    from jeffy.setups.core import edges as edge_tools
+    before = rig()
+    mesh, loop = mouth_mesh()
+    _ids, loop_points, closed = edge_tools.ordered_loop(loop)
+    assert closed
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, curve="linear", joint_count=24)
+    assert_no_pop(before)
+    joints = lips.bind_joints()
+    nodes = joints + [c for c in lips.controls.values() if not c.endswith("Master_CTL")]
+    off = max(_distance_to_loop(pos(node), loop_points) for node in nodes)
+    assert off < 1e-3, ("linear: the controls and joints sit on the edges", off)
+    shape = cmds.listRelatives("C_lipsMaster_CTL", shapes=True)[0]
+    assert cmds.getAttr(shape + ".degree") == 1, "the master outline is linear too"
+
+    # still no double transformation
+    skin_ring_to(lips, mesh)
+    lips.connect_skin()
+    top = top_vertex(mesh)
+    top_rest = cmds.pointPosition(top, world=True)
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    assert_close(cmds.pointPosition(top, world=True), (top_rest[0], top_rest[1] + LIFT, top_rest[2]),
+                 "no double transformation", 0.02)
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
+
+    # rebuilt cubic (the default), the joints round off between the vertices
+    lips = lips.rebuild(options={"curve": "cubic"})
+    off = max(_distance_to_loop(pos(joint), loop_points) for joint in lips.bind_joints())
+    assert off > 0.01, ("cubic rounds off the loop", off)

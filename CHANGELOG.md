@@ -8,6 +8,10 @@ documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Edge Ribbon: Curve option (Cubic / Linear).** Linear makes the curve,
+  the ribbon and the master outline run straight from vertex to vertex, so
+  controls and bind joints sit exactly on the edge loop. Cubic stays the
+  default.
 - **Weights to ribbon** (Setups list): moves a limb's skin weights onto its
   Ribbon joints, split evenly along each bone, with the tip fading into the
   end joint. Other influences are untouched, the mesh doesn't move at rest,

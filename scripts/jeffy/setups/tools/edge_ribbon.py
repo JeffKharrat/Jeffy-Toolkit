@@ -51,6 +51,8 @@ _RIGHT_FRAME = mathlib.from_axes((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -
 OUTLINE_SCALE = 1.3
 #: shapes offered for the ribbon controls (names from the control shape library)
 CONTROL_SHAPES = ("sphere", "circle", "cube", "diamond", "octahedron", "square", "locator")
+#: how the curve (and the ribbon) runs along the loop
+CURVE_TYPES = ("cubic", "linear")
 
 
 @scene.register
@@ -77,6 +79,10 @@ class EdgeRibbon(Setup):
         Option("joint_count", "Bind joints", 20, minimum=2, maximum=200),
         Option("control_shape", "Control shape", "sphere", choices=CONTROL_SHAPES,
                tip="Shape of the ribbon controls (the master keeps its outline)"),
+        Option("curve", "Curve", "cubic", choices=CURVE_TYPES,
+               tip="Cubic: a smooth curve through the loop (it rounds off between the vertices).\n"
+                   "Linear: straight lines from vertex to vertex, exactly on the edge loop (controls and bind "
+                   "joints sit on the edges)."),
         Option("width", "Ribbon width", 0.0, minimum=0.0, maximum=1000.0, step=0.1,
                tip="0 = automatic (4% of the loop length)"),
         Option("master", "Master control", True,
@@ -154,8 +160,9 @@ class EdgeRibbon(Setup):
         cmds.setAttr(world + ".inheritsTransform", 0)
         hidden = self.group("NoTouch", parent=world, visible=False)
 
+        linear = options.get("curve") == "linear"
         info_curve = _curve_through(points, closed, naming.compose(self.name + "Loop", self.side, "crv"),
-                                    max(len(points) - (0 if closed else 1), 4))
+                                    max(len(points) - (0 if closed else 1), 4), linear=linear)
         info = _CurveInfo(info_curve, closed)
         mesh_fn = om.MFnMesh(_dag_path(shape))
         length = info.length
@@ -284,12 +291,13 @@ class EdgeRibbon(Setup):
             bases.append(base_joint)
 
         if master is not None:
-            self._outline(master, pin, follows, to_worlds, head, head_rest, master_rest, closed)
+            self._outline(master, pin, follows, to_worlds, head, head_rest, master_rest, closed, linear)
 
         # the ribbons: driven (controls) and base (blendShape only)
         width = options["width"] or length * 0.04
         spans = max(options["control_count"] * 3, options["joint_count"])
-        ribbon = _build_ribbon(info, mesh_fn, width, spans, naming.compose(self.name + "Ribbon", self.side, "surface"))
+        ribbon = _build_ribbon(info, mesh_fn, width, spans, naming.compose(self.name + "Ribbon", self.side, "surface"),
+                               points if linear else None)
         ribbon_base = cmds.duplicate(ribbon, name=naming.unique_name(naming.compose(self.name + "RibbonBase",
                                                                                     self.side, "surface")))[0]
         for surface in (ribbon, ribbon_base):
@@ -448,10 +456,13 @@ class EdgeRibbon(Setup):
             return joints[0]
         raise SetupError("Game safe: found no bind joint to put the ribbon joints under")
 
-    def _outline(self, master, pin, follows, to_worlds, head, head_rest, master_rest, closed):
+    def _outline(self, master, pin, follows, to_worlds, head, head_rest, master_rest, closed, linear=False):
         """The master's curve follows the controls' blendShape + jaw pose (not the controls: no cycle)."""
         count = len(follows)
-        if closed:
+        if linear:
+            cvs = count + 1 if closed else count
+            curve = cmds.curve(degree=1, point=[(float(i), 0.0, 0.0) for i in range(cvs)])
+        elif closed:
             curve = cmds.circle(sections=count, degree=3, normal=(0, 0, 1), constructionHistory=False)[0]
             cvs = count + 3
         else:
@@ -658,7 +669,11 @@ def _mult(name, inputs):
     return node + ".matrixSum"
 
 
-def _curve_through(points, closed, name, spans):
+def _curve_through(points, closed, name, spans, linear=False):
+    """A curve along ``points``: cubic (smooth, rebuilt to ``spans`` even spans) or linear (one CV per point)."""
+    if linear:
+        cvs = [tuple(point) for point in points] + ([tuple(points[0])] if closed else [])
+        return cmds.curve(degree=1, point=cvs, name=naming.unique_name(name))
     form = om.MFnNurbsCurve.kPeriodic if closed else om.MFnNurbsCurve.kOpen
     array = om.MPointArray([om.MPoint(*point) for point in points])
     if closed:
@@ -762,19 +777,29 @@ def _labels(points, corners, closed, eps, setup_side):
     return result
 
 
-def _build_ribbon(info, mesh_fn, width, spans, name):
-    samples = max(spans * 2, 16)
-    lengths = info.distribute(samples) if info.closed else [info.length * k / samples for k in range(samples + 1)]
+def _build_ribbon(info, mesh_fn, width, spans, name, points=None):
+    """The ribbon surface along the curve. With the loop's ``points`` (linear): one straight span per edge."""
+    linear = points is not None
+    if linear:
+        frames = []
+        count = len(points)
+        for i, point in enumerate(points):
+            before = points[(i - 1) % count] if (info.closed or i > 0) else point
+            after = points[(i + 1) % count] if (info.closed or i < count - 1) else point
+            frames.append((om.MPoint(*point), (om.MPoint(*after) - om.MPoint(*before)).normal()))
+    else:
+        samples = max(spans * 2, 16)
+        lengths = info.distribute(samples) if info.closed else [info.length * k / samples
+                                                                for k in range(samples + 1)]
+        frames = [(om.MPoint(*info.point_at_length(s)), info.tangent_at_length(s)) for s in lengths]
     side_a, side_b = [], []
-    for s in lengths:
-        point = om.MPoint(*info.point_at_length(s))
-        tangent = info.tangent_at_length(s)
+    for point, tangent in frames:
         _closest, normal, _face = mesh_fn.getClosestPointAndNormal(point, om.MSpace.kWorld)
         across = (tangent ^ om.MVector(normal)).normal() * (width * 0.5)
         side_a.append(point + across)
         side_b.append(point - across)
-    curve_a = _curve_through([(p.x, p.y, p.z) for p in side_a], info.closed, name + "A_tmp", spans)
-    curve_b = _curve_through([(p.x, p.y, p.z) for p in side_b], info.closed, name + "B_tmp", spans)
+    curve_a = _curve_through([(p.x, p.y, p.z) for p in side_a], info.closed, name + "A_tmp", spans, linear)
+    curve_b = _curve_through([(p.x, p.y, p.z) for p in side_b], info.closed, name + "B_tmp", spans, linear)
     surface = cmds.loft(curve_a, curve_b, constructionHistory=False, uniform=True, close=False, autoReverse=True,
                         degree=1, sectionSpans=1, range=False, polygon=0, reverseSurfaceNormals=True,
                         name=naming.unique_name(name))[0]

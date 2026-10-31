@@ -427,6 +427,10 @@ The node list comes from the setup's tag.
   octahedron, square, locator), ribbon width (auto), master control, jaw follow
   defaults (upper 0, corners 0.5, lower 1), corner falloff (0.25), size,
   game safe.
+- **Curve: Cubic or Linear.** Cubic (default) is a smooth curve through the
+  loop: it rounds off between the vertices, so on a low-res loop the controls
+  and joints float a little off the edges. Linear runs straight from vertex to
+  vertex, exactly on the edge loop (the ribbon and the master outline too).
 - **Skinned joints are kept**: deleting the setup leaves its skinned bind
   joints in the skin, at rest; building it again (same name) or rebuilding
   reuses them, so weights are never touched (skin layers, ngSkinTools and
