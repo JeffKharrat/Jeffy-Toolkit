@@ -533,3 +533,22 @@ def test_edge_ribbon_built_while_a_shape_is_on():
     for ctl in lips.controls.values():
         for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
             assert abs(cmds.getAttr(ctl + "." + attr)) < 1e-6, (ctl, attr)
+
+
+def test_edge_ribbon_centre_control_moves_joints_evenly():
+    rig()
+    mesh, loop, _ring = cartoon_face()
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, name="toon", follow="position only", joint_count=16)
+    joints = lips.bind_joints()
+    rest = dict((j, pos(j)) for j in joints)
+    cmds.setAttr("C_toonUpper_CTL.translateY", 2.0)
+    centre = "C_toonUpper_JNT"
+    moved = [a - b for a, b in zip(pos(centre), rest[centre])]
+    assert abs(moved[0]) < 1e-3 and moved[1] > 1.5, ("the centre joint goes straight up", moved)
+    assert abs(cmds.xform(centre, query=True, worldSpace=True, rotation=True)[2]) < 0.5, "and doesn't tilt"
+    left = [j for j in joints if j.startswith("L_toonUpper")]
+    right = [j.replace("L_", "R_", 1) for j in left]
+    for a, b in zip(left, right):  # both sides move alike
+        da = [x - y for x, y in zip(pos(a), rest[a])]
+        db = [x - y for x, y in zip(pos(b), rest[b])]
+        assert abs(da[1] - db[1]) < 1e-3 and abs(da[0] + db[0]) < 1e-3, (a, da, db)

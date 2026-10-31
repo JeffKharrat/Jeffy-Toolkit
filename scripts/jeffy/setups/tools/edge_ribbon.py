@@ -413,8 +413,9 @@ class EdgeRibbon(Setup):
                     if found is seg:
                         members.append((along, drivers[i]))
             members.sort(key=lambda item: item[0])
-            surface = _build_ribbon(seg.info, mesh_fn, width, 0, self._n("Ribbon" + label, "surface"),
-                                    [points[i] for i in seg.ids[:len(seg.ids) - (1 if seg.closed else 0)]],
+            # smooth (cubic): it only carries the controls' motion, so joints turn evenly between controls
+            spans = max(len(members) * 3, options["joint_count"], 8)
+            surface = _build_ribbon(seg.info, mesh_fn, width, spans, self._n("Ribbon" + label, "surface"), None,
                                     out_of_face)
             surface = cmds.parent(surface, hidden)[0]
             _skin_ribbon(surface, [d for _a, d in members], [a for a, _d in members], seg.info,
