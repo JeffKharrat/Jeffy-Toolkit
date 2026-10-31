@@ -431,6 +431,16 @@ The node list comes from the setup's tag.
   loop: it rounds off between the vertices, so on a low-res loop the controls
   and joints float a little off the edges. Linear runs straight from vertex to
   vertex, exactly on the edge loop (the ribbon and the master outline too).
+- **Follow** (along lip): how the controls turn when the blendShape moves the
+  lips. *Along lip* aims each control along the loop (from its previous
+  neighbour to its next) and keeps it facing out of the face, so cartoony
+  stretches never twist it. *Position only* keeps the rest orientation. *Mesh*
+  turns with the triangles under the control (the older behaviour; it can
+  twist a lot on strong stretches).
+- **Ribbon facing** (out of face): the ribbon's width points out of the face,
+  like a fence around the mouth, so the upper and lower lips never fold into
+  each other when the mouth closes. *Across lip* lays it flat in the lips'
+  plane (the older behaviour).
 - **Outline points** (16): the master's outline has its own points, spread
   evenly along the loop (not one per control), each following the blendShape
   and the jaw live.

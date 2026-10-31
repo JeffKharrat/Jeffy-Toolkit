@@ -336,3 +336,103 @@ def test_edge_ribbon_linear_curve_sits_on_the_edges():
     lips = lips.rebuild(options={"curve": "cubic"})
     off = max(_distance_to_loop(pos(joint), loop_points) for joint in lips.bind_joints())
     assert off > 0.01, ("cubic rounds off the loop", off)
+
+
+def cartoon_face(name="toon_GEO"):
+    """A flat face (normal +Z) with a square lip loop, and a blendShape that stretches the mouth wide and
+    almost closes it (the lips end up 0.2 of a row apart)."""
+    mesh = cmds.polyPlane(name=name, width=10, height=10, subdivisionsX=6, subdivisionsY=6, axis=(0, 0, 1),
+                          constructionHistory=False)[0]
+    cmds.xform(mesh, translation=MOUTH)
+    step = 10.0 / 6
+
+    def grid(vertex):
+        x, y, _z = cmds.pointPosition(vertex, world=True)
+        return int(round((x - MOUTH[0]) / step)), int(round((y - MOUTH[1]) / step))
+
+    ring = set(v for v in cmds.ls(mesh + ".vtx[*]", flatten=True)
+               if max(abs(c) for c in grid(v)) == 1)
+    loop = [e for e in cmds.ls(mesh + ".e[*]", flatten=True)
+            if set(cmds.ls(cmds.polyListComponentConversion(e, toVertex=True), flatten=True)) <= ring]
+    target = cmds.duplicate(mesh, name=name + "Toon")[0]
+    for vertex in cmds.ls(target + ".vtx[*]", flatten=True):
+        gx, gy = grid(vertex)
+        if max(abs(gx), abs(gy)) <= 1:
+            dy = -0.9 * step * gy  # top row down, bottom row up: nearly closed
+            cmds.move(gx * step * 0.8, dy, 0, vertex, relative=True, worldSpace=True)  # and much wider
+    cmds.blendShape(target, mesh, name=name + "_BS")
+    cmds.delete(target)
+    cmds.skinCluster("C_head_JNT", "C_jaw_JNT", mesh, toSelectedBones=True, name=name + "_SKN")
+    cmds.skinPercent(name + "_SKN", mesh + ".vtx[*]", transformValue=[("C_head_JNT", 1.0)])
+    return mesh, loop, sorted(ring)
+
+
+def _axis(node, index):
+    m = cmds.xform(node, query=True, worldSpace=True, matrix=True)
+    v = m[index * 4:index * 4 + 3]
+    length = sum(x * x for x in v) ** 0.5
+    return [x / length for x in v]
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def test_edge_ribbon_cartoony_stretch_follow_modes():
+    rig()
+    mesh, loop, ring = cartoon_face()
+    lips = EdgeRibbon.build(base="C_jawChin_CTL", edges=loop, name="toon", master=False, control_count=8,
+                            joint_count=16)
+    ctls = sorted(lips.controls.values())
+    rest = dict((c, pos(c)) for c in ctls)
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+
+    # along lip (default): every control keeps facing out of the face and aims along the loop
+    for ctl in ctls:
+        assert _dot(_axis(ctl, 2), (0.0, 0.0, 1.0)) > 0.999 or _dot(_axis(ctl, 2), (0.0, 0.0, -1.0)) > 0.999, \
+            (ctl, _axis(ctl, 2))
+        assert abs(_axis(ctl, 0)[2]) < 1e-3, (ctl, "X stays in the face's plane")
+    upper = "C_toonUpper_CTL"
+    if cmds.objExists(upper):
+        # the middle of the upper lip runs straight across: its X stays horizontal
+        assert abs(_axis(upper, 0)[1]) < 0.02, ("the upper lip control doesn't tilt", _axis(upper, 0))
+        assert pos(upper)[1] < rest[upper][1] - 1.0, "it follows the blendShape down"
+
+    # skin every vertex to its nearest bind joint: still no double transformation on a huge stretch
+    skin = mesh + "_SKN"
+    joints = lips.bind_joints()
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
+    for joint in joints:
+        cmds.skinCluster(skin, edit=True, addInfluence=joint, weight=0.0)
+    for vertex in ring:
+        point = cmds.pointPosition(vertex, world=True)
+        nearest = min(joints, key=lambda j: sum((a - b) ** 2 for a, b in zip(pos(j), point)))
+        cmds.skinPercent(skin, vertex, transformValue=[(nearest, 1.0)], zeroRemainingInfluences=True)
+    lips.connect_skin()
+    cmds.setAttr(skin + ".envelope", 0)
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    shaped = [cmds.pointPosition(v, world=True) for v in ring]
+    cmds.setAttr(skin + ".envelope", 1)
+    for vertex, expected in zip(ring, shaped):
+        assert_close(cmds.pointPosition(vertex, world=True), expected, "no double transformation", 1e-3)
+
+    # mouth nearly closed: moving the upper lip control moves the upper lip, not the lower one
+    if cmds.objExists(upper):
+        top = [v for v in ring if cmds.pointPosition(v, world=True)[1] > MOUTH[1] + 0.05]
+        bottom = [v for v in ring if cmds.pointPosition(v, world=True)[1] < MOUTH[1] - 0.05]
+        before = dict((v, cmds.pointPosition(v, world=True)) for v in top + bottom)
+        cmds.setAttr(upper + ".translateY", 0.5)
+        moved_top = max(cmds.pointPosition(v, world=True)[1] - before[v][1] for v in top)
+        moved_bottom = max(abs(cmds.pointPosition(v, world=True)[1] - before[v][1]) for v in bottom)
+        assert moved_top > 0.3, moved_top
+        assert moved_bottom < 0.05, ("the lower lip stays", moved_bottom)
+        cmds.setAttr(upper + ".translateY", 0)
+
+    # position only: the controls keep their rest orientation
+    cmds.setAttr(mesh + "_BS.w[0]", 0)
+    lips = lips.rebuild(options={"follow": "position only"})
+    cmds.setAttr(mesh + "_BS.w[0]", 1)
+    for ctl in lips.controls.values():
+        for index in range(3):
+            assert abs(abs(_dot(_axis(ctl, index), [1.0 if k == index else 0.0 for k in range(3)])) - 1) < 1e-3, \
+                (ctl, index, _axis(ctl, index))

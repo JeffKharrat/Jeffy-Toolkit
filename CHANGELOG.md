@@ -12,6 +12,12 @@ documented here. The format follows
   the ribbon and the master outline run straight from vertex to vertex, so
   controls and bind joints sit exactly on the edge loop. Cubic stays the
   default.
+- **Edge Ribbon: Follow and Ribbon facing options**, for cartoony mouths. Follow
+  *along lip* (new default) aims the controls along the loop instead of
+  turning them with the mesh's triangles; Ribbon facing *out of face* (new
+  default) keeps the upper and lower lips' ribbon from folding when the mouth
+  closes. Setups built before keep working; rebuilding them uses the new
+  defaults (pick *mesh* / *across lip* for the older behaviour).
 - **Edge Ribbon: Outline points** (16 by default): the master's outline gets its
   own points along the loop instead of one per control, so it keeps the lips'
   shape (also with Curve: Linear).
